@@ -303,7 +303,7 @@ export const FILTERS: FilterDef[] = [
     ],
   },
   {
-    id: 'optionShort', label: 'Option/Short', tab: 'descriptive', help: 'Optionable means listed options trade on the stock (Cboe reports implied volatility for it).',
+    id: 'optionShort', label: 'Option/Short', tab: 'descriptive', help: 'Optionable means listed options trade on the stock (Cboe reports implied volatility for it). This is checked one stock at a time, largest first, so smaller companies fill in over several hours.',
     options: [opt('option', 'Optionable', { op: 'eq', field: 'optionable', value: true }), opt('notoption', 'Not optionable', { op: 'eq', field: 'optionable', value: false })],
   },
   {
@@ -454,7 +454,7 @@ export const FILTERS: FilterDef[] = [
     ],
   },
   {
-    id: 'gap', label: 'Gap', tab: 'technical', custom: { field: 'gap', scale: 0.01, unit: '%' },
+    id: 'gap', label: 'Gap', tab: 'technical', help: 'Open versus the prior close, for the latest completed daily bar.', custom: { field: 'gap', scale: 0.01, unit: '%' },
     options: [
       opt('u', 'Up', { op: 'gt', field: 'gap', value: 0 }),
       ...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20].map((n) => opt(`u${n}`, `Up ${n}%`, { op: 'gt', field: 'gap', value: n / 100 } as Cond)),

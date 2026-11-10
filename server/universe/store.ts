@@ -85,6 +85,9 @@ export async function loadSnapshot(): Promise<boolean> {
     const p = JSON.parse(await fs.readFile(SNAP(), 'utf8'));
     state.rows = new Map((p.rows as StockRow[]).map((r) => [r.symbol, r]));
     state.levels = new Map(p.levels ?? []);
+    // Levels saved by an older build may lack newer fields; flag them so they are
+    // re-derived from the bars already on disk (no network needed).
+    for (const lv of state.levels.values()) if (!('prev2Close' in lv)) (lv as LevelsMeta & { forSession?: string }).forSession = '';
     state.funds = new Map(((p.funds ?? []) as Fundamentals[]).map((f) => [f.cik, f]));
     state.optionableAt = new Map(p.optionableAt ?? []);
     state.live = new Map(p.live ?? []);

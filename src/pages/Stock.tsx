@@ -85,7 +85,7 @@ export default function Stock() {
       {tab === 'overview' && <Overview data={data} fin={fin} />}
       {tab === 'financials' && (fin ? <FinancialsTab fin={fin} /> : finApi.error ? <ErrorNote message={finApi.error} /> : <Loading text="Loading financial statements from SEC filings…" />)}
       {tab === 'checklist' && (finApi.loading && !fin && !finApi.error ? <Loading text="Loading financial statements from SEC filings…" /> : <Checklist a={analysis} symbol={symbol} fin={fin} finError={finApi.error} />)}
-      {tab === 'valuation' && (finApi.loading && !fin && !finApi.error ? <Loading text="Loading financial statements from SEC filings…" /> : <Valuation a={analysis} symbol={symbol} />)}
+      {tab === 'valuation' && (finApi.loading && !fin && !finApi.error ? <Loading text="Loading financial statements from SEC filings…" /> : <Valuation a={analysis} symbol={symbol} finError={finApi.error} />)}
     </div>
   );
 }

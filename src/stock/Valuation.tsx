@@ -27,7 +27,7 @@ function NumField({ label, why, value, onChange, percent, step, auto, onReset }:
   );
 }
 
-export default function Valuation({ a, symbol }: { a: Analysis; symbol: string }) {
+export default function Valuation({ a, symbol, finError }: { a: Analysis; symbol: string; finError?: string | null }) {
   const { tokens } = useTheme();
   const { inputs, result, defaults, overrides, setOverrides } = a;
   const set = (k: keyof DcfInputs, v: number | null) => setOverrides({ ...overrides, [k]: v as never });
@@ -75,6 +75,7 @@ export default function Valuation({ a, symbol }: { a: Analysis; symbol: string }
           {symbol} is a financial or real-estate company. This generic owner-earnings model is not appropriate on its own for banks, insurers or REITs — capital ratios, reserving, credit quality or FFO/AFFO matter more. Treat the numbers below as illustration only.
         </div>
       )}
+      {finError && <div className="banner warn">{finError} Nothing can be filled in automatically; enter your own normalized owner-earnings figure and growth assumptions to use the model.</div>}
       <div className={`verdict ${zone}`}>
         <div className="row between">
           <div>

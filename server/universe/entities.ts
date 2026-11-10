@@ -47,28 +47,28 @@ async function save(): Promise<void> {
   await fs.rename(tmp, file);
 }
 
+async function fetchEntity(cik: number, now: number): Promise<void> {
+  const s = await sec.submission(cik, 1);
+  entities.set(cik, s ? { cik, name: s.name, tickers: s.tickers, sic: s.sic, sicDesc: s.sicDescription, fye: s.fiscalYearEnd, state: s.state, t: now } : { cik, name: '', tickers: [], sic: null, sicDesc: null, fye: null, state: null, t: now });
+}
+
+let refreshing = false;
+
 /**
- * Make sure every CIK has an entity record. Missing or old records are fetched
- * from data.sec.gov/submissions (one request each, rate limited), so the first
- * run without a seed file takes several minutes.
+ * Make sure every CIK has an entity record. Only filers we have never seen are
+ * fetched before returning (one request each to data.sec.gov/submissions, rate
+ * limited); records that have merely aged are refreshed a few hundred at a time
+ * in the background, so a stale seed file never delays the first load.
  */
 export async function ensureEntities(ciks: number[], onProgress?: (done: number, total: number) => void): Promise<void> {
   await loadEntities();
   const now = Date.now();
-  const need = ciks.filter((c) => {
-    const e = entities.get(c);
-    return !e || now - e.t > MAX_AGE;
-  });
+  const missing = ciks.filter((c) => !entities.has(c));
   let done = 0;
   let sinceSave = 0;
-  await mapLimit(need, 4, async (cik) => {
+  await mapLimit(missing, 4, async (cik) => {
     try {
-      const s = await sec.submission(cik, 1);
-      if (s) {
-        entities.set(cik, { cik, name: s.name, tickers: s.tickers, sic: s.sic, sicDesc: s.sicDescription, fye: s.fiscalYearEnd, state: s.state, t: now });
-      } else {
-        entities.set(cik, { cik, name: '', tickers: [], sic: null, sicDesc: null, fye: null, state: null, t: now });
-      }
+      await fetchEntity(cik, now);
     } catch {
       /* try again on the next run */
     }
@@ -77,9 +77,22 @@ export async function ensureEntities(ciks: number[], onProgress?: (done: number,
       sinceSave = 0;
       await save().catch(() => undefined);
     }
-    onProgress?.(done, need.length);
+    onProgress?.(done, missing.length);
   });
-  if (need.length) await save().catch(() => undefined);
+  if (missing.length) await save().catch(() => undefined);
+
+  const stale = ciks.filter((c) => {
+    const e = entities.get(c);
+    return e != null && now - e.t > MAX_AGE;
+  });
+  if (stale.length && !refreshing) {
+    refreshing = true;
+    void mapLimit(stale.slice(0, 300), 2, (cik) => fetchEntity(cik, Date.now()).catch(() => undefined))
+      .then(() => save().catch(() => undefined))
+      .finally(() => {
+        refreshing = false;
+      });
+  }
 }
 
 export function tickerIndex(): Map<string, Entity[]> {

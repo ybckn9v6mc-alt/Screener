@@ -49,7 +49,7 @@ usable while it fills in:
 | Layer | Source | First run | Refresh |
 |---|---|---|---|
 | Listings, market value, sector, country | Nasdaq | seconds | every 20 minutes |
-| Fundamentals for ~4,900 companies | SEC EDGAR (about 480 requests) | about 1 minute | daily |
+| Fundamentals for ~4,900 companies | SEC EDGAR (about 480 requests) | 1-2 minutes | daily |
 | Price history and technicals | Nasdaq (one request per stock) | about 7 minutes | daily |
 | Live prices during the session | Nasdaq batch quotes | about 1 minute per pass | every 3 minutes while the market is open |
 | Analyst, short-interest and ownership data | Nasdaq (six requests per stock) | several hours, largest companies first | weekly |
