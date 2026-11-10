@@ -1,7 +1,7 @@
 # Stock Screener
 
 A self-hosted, Finviz-style research app for US-listed stocks, built entirely on
-public data: a market dashboard, a 71-filter screener, deep company pages, a
+public data: a market dashboard, a 74-filter screener, deep company pages, a
 Buffett-style quality checklist and an automatic intrinsic-value calculator.
 
 No API keys are needed.
@@ -12,8 +12,9 @@ No API keys are needed.
 |---|---|
 | **Markets** (home) | Index board with a chart for every index: S&P 500, Dow, Nasdaq Composite, Nasdaq-100, Russell 2000, VIX, the MSCI world indexes and 15 countries, plus rates, gold, oil, the dollar and bitcoin. One range switch (1D to 5Y) drives every chart. |
 | **Sentiment & valuation** | A Fear & Greed index with its seven components and history back to 1991, and the Buffett Indicator (US market value / GDP) with history back to 1946 against its long-run trend. |
+| **Top 10 on the Buffett checklist** | Every non-financial company above $2 billion is scored on the 14 checklist questions that financial data can answer (34 points), using the same code as its own checklist page. The ten highest are listed with price, intrinsic value, buy-below price, margin of safety, ROIC, owner-earnings yield, leverage, cash conversion and share-count change; each row opens to show every answer and the reasoning. |
 | **Compare lab** | Put the S&P 500 next to Fear & Greed, the Buffett Indicator, VIX, Treasury yields, the yield curve, world indexes or any ticker. Stacked panels on a shared time axis, indexed to 100, or standardized; correlation readout and data table. |
-| **Screener** | Every US-listed common stock and ADR (about 5,900). 71 filters in Finviz's Descriptive / Fundamental / Technical layout, each with presets and custom ranges. Views: Overview, Valuation, Financial, Ownership, Performance, Technical, Custom columns and Charts. Signals, saved screens, sorting, CSV export, shareable URLs. |
+| **Screener** | Every US-listed common stock and ADR (about 5,900). 74 filters in Finviz's Descriptive / Fundamental / Technical layout, each with presets and custom ranges, including checklist score and price versus intrinsic value. Views: Overview, Valuation, Financial, Ownership, Performance, Buffett, Technical, Custom columns and Charts. Signals, saved screens, sorting, CSV export, shareable URLs. |
 | **Company page** | Interactive price chart (candles/line/area, daily/weekly/monthly, 1D to max, SMA/EMA/Bollinger, volume, RSI, MACD, log scale, performance comparison), a Finviz-style snapshot, analysts, earnings history, ownership, insiders, dividends and SEC filing links. |
 | **Financials** | Up to 12 years annual and 16 quarters from SEC filings: income statement, cash flow, balance sheet, per-share figures and ratios. Tick any row to chart it. |
 | **Buffett checklist** | The 34 questions, 8 required gates, weights, 8 quant tests and 5-year worksheet from the Buffett Investment Qualification Checklist workbook. Questions that numbers can answer are answered automatically with the reasoning shown; judgment questions are left to you with supporting facts and where to verify. Your answers, evidence and thesis are saved per ticker in your browser. |
@@ -52,6 +53,7 @@ usable while it fills in:
 | Fundamentals for ~4,900 companies | SEC EDGAR (about 480 requests) | 1-2 minutes | daily |
 | Price history and technicals | Nasdaq (one request per stock) | about 7 minutes | daily |
 | Live prices during the session | Nasdaq batch quotes | about 1 minute per pass | every 3 minutes while the market is open |
+| Checklist scores for ~1,450 larger companies | SEC EDGAR (one request per company) | about 3 minutes | when a company reports new results |
 | Analyst, short-interest and ownership data | Nasdaq (six requests per stock) | several hours, largest companies first | weekly |
 
 A stock page refreshes that company's analyst and ownership data immediately,
@@ -100,6 +102,18 @@ These are the places where the app deliberately differs from what you might assu
   IFRS (many foreign ADRs) have no fundamentals here. Income items are trailing
   twelve months; cash-flow items use the latest fiscal year, because quarterly
   filings report cash flow year-to-date.
+- **The Top 10 ranks a data-only score.** Twenty of the checklist's 34 questions
+  (understanding the business, the moat, management, governance) need your
+  judgment and are not scored, so the list is a shortlist for research, not a
+  verdict. Financial and real-estate companies are left out, as the workbook
+  treats them as specialist cases, and a company is dropped if the data answers
+  No to a required gate.
+- **Stock splits are restated.** SEC filings never restate years before a split,
+  which would make share counts jump and EPS collapse. The app reads the split
+  from the comparative figures in the company's later filings and puts every
+  year on today's share basis. Where the share count in the filings does not
+  match the listed share (Berkshire B, ADRs), per-share values use market value
+  divided by price instead, and the page says so.
 - **Sector and industry names are Nasdaq's**, not the ones Finviz uses.
 - **Estimated fields are labeled.** Russell 2000 membership is licensed data and
   is approximated (US companies ranked 1,001-3,000 by market value). Float and
@@ -120,7 +134,7 @@ server/            Express API and background data collection
   sources/         One module per data source (nasdaq, sec, cboe, fed)
   market/          Index board, Fear & Greed, Buffett Indicator, series registry
   universe/        Universe build: fundamentals, technicals, live quotes, membership
-  company/         Per-company financial statements and detail
+  company/         Per-company financial statements, checklist ranking and detail
 shared/            Logic used by both sides: filters, columns, checklist, valuation, analysis
 src/               React client (pages, stock tabs, chart components)
 tests/             Unit tests for the valuation model, checklist scoring, filters, indicators
