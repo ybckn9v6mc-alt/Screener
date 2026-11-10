@@ -11,6 +11,7 @@ import { loadMembership } from './membership.ts';
 import { applyLevels, computeLevels } from './technicals.ts';
 import { state, noteError, markDirty, saveSnapshot, loadSnapshot, readBars, writeBars, type LevelsMeta } from './store.ts';
 import type { Bar, StockRow } from '../../shared/types.ts';
+import { applyRanking, loadRanking, refreshRanking, saveRanking } from '../company/ranking.ts';
 
 const HISTORY_DAYS = 760;
 
@@ -328,6 +329,7 @@ export function recompute(row: StockRow): void {
   const er = earnings.get(row.symbol);
   row.earningsDate = er?.date ?? null;
   row.earningsTime = er?.time ?? null;
+  applyRanking(row);
 }
 
 // ---------------------------------------------------------------------------------
@@ -751,6 +753,7 @@ export async function startUniverse(): Promise<void> {
   await loadEntities();
   const had = await loadSnapshot();
   await loadSide();
+  await loadRanking();
   if (had) {
     linkEntities();
     for (const row of state.rows.values()) recompute(row);
@@ -786,6 +789,8 @@ export async function startUniverse(): Promise<void> {
     if (config.liveQuotes) loop('live quotes', () => 30_000, liveSweep);
     loop('optionable', () => 5_000, optionableTrickle);
     loop('earnings', () => HOUR, refreshEarnings);
+    // Checklist analysis of larger companies: one SEC request each, then only when they report again.
+    loop('checklist ranking', () => 5 * MIN, refreshRanking);
     if (config.enrich) {
       loop('enrichment', () => 20_000, async () => {
         // Wait for the price history crawl so the two do not compete for the same host.
@@ -796,6 +801,7 @@ export async function startUniverse(): Promise<void> {
     loop('save', () => 2 * MIN, async () => {
       await saveSnapshot();
       await saveSide();
+      await saveRanking();
     });
   })();
 }

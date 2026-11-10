@@ -432,6 +432,32 @@ export const FILTERS: FilterDef[] = [
     ],
   },
 
+  {
+    id: 'buffettScore', label: 'Buffett Checklist Score', tab: 'fundamental', custom: { field: 'buffettScore', scale: 0.01, unit: '%' },
+    help: 'Share of the points earned on the 14 checklist questions that financial data can answer. Calculated for non-financial companies above about $1.6 billion in market value.',
+    options: [
+      opt('full', 'Full marks (100%)', { op: 'ge', field: 'buffettScore', value: 0.9999 }),
+      ...[90, 85, 80, 70, 60, 50].map((n) => opt(`o${n}`, `${n}% or more`, { op: 'ge', field: 'buffettScore', value: n / 100 } as Cond)),
+      opt('u50', 'Under 50%', { op: 'lt', field: 'buffettScore', value: 0.5 }),
+    ],
+  },
+  {
+    id: 'buffettGates', label: 'Checklist Gates (data)', tab: 'fundamental',
+    help: 'Whether the data answers No to any required gate it can judge: recurring owner cash, conservative leverage, an estimable owner-earnings figure.',
+    options: [opt('pass', 'No gate failed', { op: 'eq', field: 'buffettGates', value: 'pass' }), opt('fail', 'A gate failed', { op: 'eq', field: 'buffettGates', value: 'fail' })],
+  },
+  {
+    id: 'valueZone', label: 'Price vs Intrinsic Value', tab: 'fundamental', custom: { field: 'valueDiscount', scale: 0.01, unit: '% below' },
+    help: 'Price against the automatic owner-earnings valuation. The buy zone is intrinsic value less a 25% margin of safety.',
+    options: [
+      opt('buyzone', 'In the buy zone (25%+ below value)', { op: 'cmp', a: 'price', cmp: 'lt', b: 'buyBelow' }),
+      opt('below', 'Below intrinsic value', { op: 'gt', field: 'valueDiscount', value: 0 }),
+      ...[10, 20, 30, 40, 50].map((n) => opt(`b${n}`, `${n}% or more below value`, { op: 'ge', field: 'valueDiscount', value: n / 100 } as Cond)),
+      opt('above', 'Above intrinsic value', { op: 'lt', field: 'valueDiscount', value: 0 }),
+      opt('above50', '50% or more above value', { op: 'le', field: 'valueDiscount', value: -0.5 }),
+    ],
+  },
+
   // ------------------------------------------------------------ Technical
   { id: 'perf', label: 'Performance', tab: 'technical', options: perfOptions() },
   { id: 'perf2', label: 'Performance 2', tab: 'technical', options: perfOptions() },

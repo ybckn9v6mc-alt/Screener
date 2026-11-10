@@ -43,8 +43,8 @@ export interface CompanyFacts {
   facts: Record<string, Record<string, { label: string | null; description: string | null; units: Record<string, CompanyFact[]> }>>;
 }
 
-export async function companyFacts(cik: number): Promise<CompanyFacts | null> {
-  return fetchJson<CompanyFacts>(`${BASE}/api/xbrl/companyfacts/CIK${String(cik).padStart(10, '0')}.json`, { nullOn: [404], timeoutMs: 90_000 });
+export async function companyFacts(cik: number, background = false): Promise<CompanyFacts | null> {
+  return fetchJson<CompanyFacts>(`${BASE}/api/xbrl/companyfacts/CIK${String(cik).padStart(10, '0')}.json`, { nullOn: [404], timeoutMs: 90_000, background });
 }
 
 export interface Submission {

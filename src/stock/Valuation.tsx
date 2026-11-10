@@ -76,6 +76,7 @@ export default function Valuation({ a, symbol, finError }: { a: Analysis; symbol
         </div>
       )}
       {finError && <div className="banner warn">{finError} Nothing can be filled in automatically; enter your own normalized owner-earnings figure and growth assumptions to use the model.</div>}
+      {defaults?.shareBasisNote && <div className="banner">{defaults.shareBasisNote}</div>}
       <div className={`verdict ${zone}`}>
         <div className="row between">
           <div>

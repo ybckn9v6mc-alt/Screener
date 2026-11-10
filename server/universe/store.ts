@@ -52,6 +52,8 @@ export function noteError(msg: string) {
 }
 
 const SNAP = () => path.join(config.dataDir, 'universe', 'snapshot.json');
+/** Bump when the rules that derive stored fundamentals change. */
+const SNAPSHOT_VERSION = 2;
 
 let dirty = false;
 export const markDirty = () => {
@@ -64,6 +66,7 @@ export async function saveSnapshot(force = false): Promise<void> {
   const file = SNAP();
   await fs.mkdir(path.dirname(file), { recursive: true });
   const payload = {
+    v: SNAPSHOT_VERSION,
     savedAt: Date.now(),
     session: state.session,
     quotesAt: state.quotesAt,
@@ -94,7 +97,8 @@ export async function loadSnapshot(): Promise<boolean> {
     state.screenerSession = p.screenerSession ?? '';
     state.session = p.session ?? state.session;
     state.quotesAt = p.quotesAt ?? 0;
-    state.fundamentalsAt = p.fundamentalsAt ?? 0;
+    // An older snapshot's fundamentals were computed by older rules: refresh them at startup.
+    state.fundamentalsAt = p.v === SNAPSHOT_VERSION ? (p.fundamentalsAt ?? 0) : 0;
     state.status.universe = { count: state.rows.size, updatedAt: state.quotesAt || null };
     state.status.fundamentals = { done: state.funds.size > 0, covered: [...state.rows.values()].filter((r) => r.cik != null && r.fundamentalsAsOf).length, updatedAt: state.fundamentalsAt || null };
     return true;

@@ -34,6 +34,8 @@ export interface Financials {
   /** Latest trailing twelve months (flows summed over four quarters, balance sheet at the latest quarter end). */
   ttm: { period: Period; values: Record<string, number | null> } | null;
   filings: { form: string; filed: string; reportDate: string; url: string }[];
+  /** Set when older years were converted to today's share basis after a stock split (the largest factor applied). */
+  splitAdjusted?: number | null;
   source: string;
 }
 

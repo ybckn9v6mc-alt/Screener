@@ -2,9 +2,9 @@ import { useMemo } from 'react';
 import { useStored } from '../lib/store';
 import type { Financials } from '../../shared/financials';
 import type { StockRow } from '../../shared/types';
-import { QUANT_TESTS, QUESTIONS, combinedAssessment, runTest, scoreChecklist, type Answer } from '../../shared/checklist';
-import { buildWorksheet, isSpecialistSector, ratioSummary, suggestAnswers, valuationDefaults, type Suggestion } from '../../shared/analysis';
-import { dcf, type DcfInputs } from '../../shared/valuation';
+import { QUESTIONS, combinedAssessment, scoreChecklist, type Answer } from '../../shared/checklist';
+import { analyse, autoScore, isSpecialistSector, DATA_QUESTION_IDS } from '../../shared/analysis';
+import type { DcfInputs } from '../../shared/valuation';
 
 export interface ChecklistState {
   answers: Record<string, Answer>;
@@ -26,19 +26,7 @@ export function useAnalysis(symbol: string, row: StockRow | null, fin: Financial
   const [check, setCheck] = useStored<ChecklistState>(`checklist.${symbol}`, EMPTY);
 
   return useMemo(() => {
-    const price = row?.price ?? null;
-    const worksheet = fin ? buildWorksheet(fin) : null;
-    const summary = worksheet ? ratioSummary(worksheet) : null;
-    const defaults = fin ? valuationDefaults(fin, price) : null;
-    const base: DcfInputs = defaults?.inputs ?? { price, ownerEarnings: null, marginOfSafety: 0.25, discountRate: 0.1, growth1to5: 0.05, growth6to10: 0.03, terminalGrowth: 0.02 };
-    const inputs: DcfInputs = { ...base, ...overrides, price: overrides.price ?? price };
-    const result = dcf(inputs);
-    const thresholds: Record<string, number> = Object.fromEntries(QUANT_TESTS.map((t) => [t.id, check.thresholds?.[t.id] ?? t.threshold]));
-    const tests = QUANT_TESTS.map((t) => {
-      const value = summary ? (summary as unknown as Record<string, number | null>)[t.id] : null;
-      return { def: t, value, threshold: thresholds[t.id], result: runTest(t, value, thresholds[t.id]) };
-    });
-    const suggestions: Record<string, Suggestion> = suggestAnswers({ fin, worksheet, summary, thresholds, dcfInputs: inputs, dcfResult: result, sector: row?.sector ?? '', industry: row?.industry ?? '' });
+    const { worksheet, summary, defaults, inputs, result, tests, suggestions } = analyse({ fin, price: row?.price ?? null, marketCap: row?.marketCap ?? null, sector: row?.sector ?? '', industry: row?.industry ?? '', thresholds: check.thresholds, overrides });
     // A question the reader has not touched takes the data-driven answer; judgment questions stay blank.
     const effective: Record<string, Answer> = {};
     const isAuto: Record<string, boolean> = {};
@@ -52,10 +40,14 @@ export function useAnalysis(symbol: string, row: StockRow | null, fin: Financial
       } else effective[q.id] = '';
     }
     const card = scoreChecklist(effective);
+    // The same data-only score the front-page ranking uses (it ignores the reader's own answers).
+    const dataAnswers: Record<string, Answer> = {};
+    for (const id of DATA_QUESTION_IDS) dataAnswers[id] = suggestions[id]?.answer ?? '';
+    const dataScore = autoScore(dataAnswers);
     const specialist = isSpecialistSector(row?.sector ?? '', row?.sic);
     const verdict = combinedAssessment(card, result.status, check.requiredScore ?? 0.85, !specialist);
     return {
-      worksheet, summary, defaults, inputs, result, tests, suggestions, effective, isAuto, card, verdict, specialist,
+      worksheet, summary, defaults, inputs, result, tests, suggestions, effective, isAuto, card, dataScore, verdict, specialist,
       overrides, setOverrides, check: { ...EMPTY, ...check }, setCheck,
     };
   }, [row, fin, overrides, check, setOverrides, setCheck]);

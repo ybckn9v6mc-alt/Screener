@@ -85,6 +85,14 @@ export interface StockRow {
   debtEq?: number | null;
   fundamentalsAsOf?: string | null;
 
+  // Buffett checklist, data-answerable part (non-financial companies above the ranking size floor)
+  buffettScore?: number | null; // points earned / points the data can answer (0..1)
+  buffettPoints?: number | null;
+  buffettGates?: 'pass' | 'fail' | null; // whether any data-answered required gate is a No
+  intrinsicValue?: number | null; // per share, from the automatic owner-earnings model
+  buyBelow?: number | null; // intrinsic value less the 25% margin of safety
+  valueDiscount?: number | null; // 1 - price / intrinsic value (positive = below value)
+
   // ownership / analysts (slow enrichment crawl)
   insiderOwn?: number | null;
   insiderTrans?: number | null;
@@ -143,6 +151,8 @@ export interface BuildStatus {
   fundamentals: { done: boolean; covered: number; updatedAt: number | null; progress?: string };
   technicals: { done: number; total: number; updatedAt: number | null };
   enrichment: { done: number; total: number; enabled: boolean };
+  /** Background checklist analysis of larger companies (one SEC request each). */
+  ranking?: { done: number; total: number };
   /** Rolling delayed-quote sweep; `behind` means the end-of-day listing predates the current session. */
   live?: { behind: boolean; done: number; total: number };
   errors: string[];

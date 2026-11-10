@@ -355,3 +355,32 @@ details.method li { margin: 4px 0; }
   .fg-row > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
 }
 .btn[aria-pressed='true'] { background: var(--accent-wash); border-color: var(--accent); color: var(--accent-ink); }
+
+/* ---- front-page checklist ranking ---- */
+.top10-cards { display: none; }
+.top10-open > td { background: var(--surface-2); padding: 0 !important; }
+.top10-open:hover { background: transparent !important; }
+.top10-detail { padding: 14px 16px; font-size: 13px; }
+.top10-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px 20px; }
+.top10-facts .k, .top10-grid .k { display: block; font-size: 11px; color: var(--muted); }
+.top10-answers { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 8px 20px; }
+.top10-answer { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; align-items: start; }
+.top10-answer .badge { justify-self: start; }
+.top10-card { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.top10-card:last-child { border-bottom: 0; }
+.top10-card .top10-detail { padding: 12px 0 0; }
+.top10-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; margin-top: 8px; }
+@media (max-width: 1319px) {
+  .top10-table { display: none; }
+  .top10-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .top10-card { border-right: 1px solid var(--border); }
+}
+@media (max-width: 640px) {
+  .top10-answers { grid-template-columns: minmax(0, 1fr); }
+  .top10-answer { grid-template-columns: 88px minmax(0, 1fr); }
+}
+/* The expanded answers must never widen the table: take the cell's width, contribute none of their own. */
+.top10-open .top10-detail { width: 0; min-width: 100%; box-sizing: border-box; }
+
+.top10-table th { white-space: normal; line-height: 1.2; vertical-align: bottom; }
+.top10-table th, .top10-table td { padding: 6px 7px; }

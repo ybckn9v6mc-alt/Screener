@@ -14,6 +14,7 @@ interface Raw {
   e: string;
   v: number;
   filed: string;
+  form: string;
   p: number;
 }
 
@@ -60,12 +61,134 @@ const INSTANT: Record<string, { tags: string[]; unit?: string }> = {
   stDebt: { tags: ['DebtCurrent', 'ShortTermBorrowings', 'CommercialPaper'] },
 };
 
-function collect(cf: sec.CompanyFacts, tags: string[], unit = 'USD'): Raw[] {
+interface Basis {
+  /** Multiply a share count from a filing made on this date to put it on today's basis. */
+  shares: (filed: string) => number;
+  /** Divide a per-share figure (EPS, dividends) from a filing made on this date. */
+  perShare: (filed: string) => number;
+}
+
+const SPLIT_RATIOS = [1.5, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+
+/** Nearest conventional split ratio (or its reciprocal, for reverse splits) within 6%, else null. */
+function snapSplit(f: number): number | null {
+  for (const r of SPLIT_RATIOS) {
+    if (Math.abs(f / r - 1) < 0.06) return r;
+    if (Math.abs(f * r - 1) < 0.06) return 1 / r;
+  }
+  return null;
+}
+
+/**
+ * Stock splits. A filing reports share counts on the share basis in force when
+ * it was filed, and older filings are never restated, so a ten-for-one split
+ * makes the years before it look like a tenfold jump in shares and a collapse
+ * in EPS. Companies do restate the comparative periods inside later filings,
+ * which gives the conversion exactly: when the same period's weighted share
+ * count appears in two filings and differs, the ratio is what changed between
+ * those two filing dates.
+ *
+ * Two different things produce such a ratio, and they are kept apart:
+ *  - a real split, which also moves EPS by the same ratio, and
+ *  - a reporting-scale error (shares filed in thousands one year, units the
+ *    next), which changes the share count a thousandfold but leaves EPS alone.
+ * Share counts are corrected in both cases; per-share figures only when EPS
+ * confirms the split, or, where EPS was not restated alongside, when the ratio
+ * is a conventional split ratio.
+ */
+function shareBasis(cf: sec.CompanyFacts): Basis {
+  const gaap = cf.facts['us-gaap'] ?? {};
+  const sharePairs: { from: string; to: string; factor: number }[] = [];
+  // raw = older EPS / newer EPS for the same period, i.e. the share factor EPS implies.
+  const epsPairs: { from: string; to: string; raw: number }[] = [];
+  const dates = new Set<string>();
+  const restated = (tag: string, unit: string, onPair: (from: string, to: string, older: number, newer: number) => void) => {
+    const byPeriod = new Map<string, { filed: string; v: number }[]>();
+    for (const f of gaap[tag]?.units?.[unit] ?? []) {
+      if (!f.start || !isNum(f.val) || f.val === 0 || !f.filed) continue;
+      dates.add(f.filed);
+      const key = `${f.start}|${f.end}`;
+      const list = byPeriod.get(key);
+      if (list) list.push({ filed: f.filed, v: f.val });
+      else byPeriod.set(key, [{ filed: f.filed, v: f.val }]);
+    }
+    for (const list of byPeriod.values()) {
+      list.sort((a, b) => (a.filed < b.filed ? -1 : 1));
+      for (let k = 1; k < list.length; k++) if (list[k].filed !== list[k - 1].filed) onPair(list[k - 1].filed, list[k].filed, list[k - 1].v, list[k].v);
+    }
+  };
+  for (const tag of FLOW.sharesDiluted.tags) {
+    restated(tag, 'shares', (from, to, older, newer) => {
+      // Restatements of a few percent are corrections, not a change of basis.
+      if (older > 0 && newer > 0) sharePairs.push({ from, to, factor: Math.abs(newer / older - 1) < 0.045 ? 1 : newer / older });
+    });
+  }
+  for (const tag of FLOW.eps.tags) {
+    restated(tag, 'USD/shares', (from, to, older, newer) => {
+      if (older / newer > 0) epsPairs.push({ from, to, raw: older / newer });
+    });
+  }
+  const median = (a: number[]) => [...a].sort((x, y) => x - y)[a.length >> 1];
+  const sorted = [...dates].sort().reverse(); // newest first
+  const sFactor = new Map<string, number>();
+  const pFactor = new Map<string, number>();
+  let laterS = 1;
+  let laterP = 1;
+  for (const d of sorted) {
+    const sp = sharePairs.filter((x) => x.from === d && sFactor.has(x.to));
+    const ep = epsPairs.filter((x) => x.from === d && pFactor.has(x.to));
+    let fs = laterS;
+    let fp = laterP;
+    if (sp.length) {
+      fs = median(sp.map((x) => (sFactor.get(x.to) as number) * x.factor));
+      fp = median(
+        sp.map((x) => {
+          const base = pFactor.get(x.to) as number;
+          if (x.factor === 1) return base;
+          const same = ep.filter((y) => y.to === x.to);
+          if (same.length) return Math.abs(median(same.map((y) => y.raw)) / x.factor - 1) < 0.12 ? base * x.factor : base;
+          return snapSplit(x.factor) != null ? base * x.factor : base;
+        }),
+      );
+    } else if (ep.length) {
+      // No share count in this filing (some multi-class companies): restated EPS carries the
+      // split on its own. EPS is also restated for accounting reasons, so only a change that
+      // lands on a conventional split ratio counts.
+      fp = median(
+        ep.map((y) => {
+          const base = pFactor.get(y.to) as number;
+          if (Math.abs(y.raw - 1) < 0.045 || (y.raw < 1.4 && y.raw > 0.72)) return base;
+          const snapped = snapSplit(y.raw);
+          return snapped != null ? base * snapped : base;
+        }),
+      );
+    }
+    sFactor.set(d, fs);
+    pFactor.set(d, fp);
+    laterS = fs;
+    laterP = fp;
+  }
+  const asc = [...sorted].reverse();
+  const lookup = (m: Map<string, number>) => (filed: string) => {
+    const exact = m.get(filed);
+    if (exact != null) return exact;
+    // A filing with no share or EPS facts of its own shares the basis of the next filing after it.
+    const next = asc.find((d) => d >= filed);
+    return next ? (m.get(next) as number) : 1;
+  };
+  return { shares: lookup(sFactor), perShare: lookup(pFactor) };
+}
+
+function collect(cf: sec.CompanyFacts, tags: string[], unit = 'USD', basis?: Basis): Raw[] {
   const out: Raw[] = [];
   const gaap = cf.facts['us-gaap'] ?? {};
   tags.forEach((tag, p) => {
     for (const f of gaap[tag]?.units?.[unit] ?? []) {
-      if (isNum(f.val)) out.push({ s: f.start, e: f.end, v: f.val, filed: f.filed, p });
+      if (!isNum(f.val)) continue;
+      let v = f.val;
+      if (basis && unit === 'shares') v *= basis.shares(f.filed);
+      else if (basis && unit === 'USD/shares') v /= basis.perShare(f.filed);
+      out.push({ s: f.start, e: f.end, v, filed: f.filed, form: f.form ?? '', p });
     }
   });
   return out;
@@ -103,11 +226,12 @@ interface FY {
 
 function fiscalYears(cf: sec.CompanyFacts): FY[] {
   const base = [...collect(cf, FLOW.netIncome.tags), ...collect(cf, FLOW.revenue.tags)];
+  const yearLong = base.filter((f) => len(f) >= 340 && len(f) <= 380);
+  // Some companies (Amazon, for one) also publish trailing-twelve-month columns every quarter.
+  // Only periods that appear in an annual report are fiscal years.
+  const fromAnnualReports = yearLong.filter((f) => /^(10-K|20-F|40-F)/.test(f.form));
   const byEnd = new Map<string, FY>();
-  for (const f of base) {
-    const l = len(f);
-    if (l >= 340 && l <= 380) byEnd.set(f.e, { start: f.s as string, end: f.e, complete: true });
-  }
+  for (const f of fromAnnualReports.length ? fromAnnualReports : yearLong) byEnd.set(f.e, { start: f.s as string, end: f.e, complete: true });
   const years = [...byEnd.values()].sort((a, b) => (a.end < b.end ? -1 : 1));
   // Collapse near-duplicate ends (52/53-week calendars restated by a few days).
   const out: FY[] = [];
@@ -211,6 +335,9 @@ function derive(v: Record<string, number | null>, prev: Record<string, number | 
   v.capexToCfo = n('cfo') != null && (v.cfo as number) > 0 ? div(v.capex, v.cfo) : null;
 }
 
+/** Bump when the way statements are built changes, so older cached copies are ignored. */
+const CACHE_NS = 'financials-v3';
+
 const FLOW_KEYS = Object.keys(FLOW);
 const INSTANT_KEYS = Object.keys(INSTANT);
 
@@ -221,11 +348,17 @@ function toSet(periods: Period[], rows: Record<string, number | null>[]): Statem
   return { periods, values };
 }
 
-async function build(cik: number): Promise<Financials | null> {
-  const cf = await sec.companyFacts(cik);
+async function build(cik: number, background = false): Promise<Financials | null> {
+  const cf = await sec.companyFacts(cik, background);
+  return cf ? buildFinancials(cik, cf) : null;
+}
+
+/** Pure: turn one company's XBRL facts into statements (exported for tests). */
+export function buildFinancials(cik: number, cf: sec.CompanyFacts): Financials | null {
   if (!cf?.facts?.['us-gaap']) return null;
+  const basis = shareBasis(cf);
   const flowFacts: Record<string, Raw[]> = {};
-  for (const [k, def] of Object.entries(FLOW)) flowFacts[k] = collect(cf, def.tags, def.unit ?? 'USD');
+  for (const [k, def] of Object.entries(FLOW)) flowFacts[k] = collect(cf, def.tags, def.unit ?? 'USD', basis);
   const instFacts: Record<string, Raw[]> = {};
   for (const [k, def] of Object.entries(INSTANT)) instFacts[k] = collect(cf, def.tags, def.unit ?? 'USD');
 
@@ -307,26 +440,49 @@ async function build(cik: number): Promise<Financials | null> {
     ttm = { period: { start: last4p[0].start, end: last4p[3].end, label: 'TTM', fiscalYear: last4p[3].fiscalYear, kind: 'ttm' }, values: clean };
   }
 
-  const sub = await sec.submission(cik, 300).catch(() => null);
-  const filings = (sub?.filings ?? [])
-    .filter((f) => ['10-K', '10-Q', '20-F', '40-F', 'DEF 14A', '8-K'].includes(f.form))
-    .slice(0, 40)
-    .map((f) => ({ form: f.form, filed: f.filed, reportDate: f.reportDate, url: sec.filingUrl(cik, f.accn, f.doc) }));
+  // Largest split adjustment applied to any year shown, so the page can say that history was restated.
+  let splitFactor = 1;
+  for (const f of [...collect(cf, FLOW.sharesDiluted.tags, 'shares'), ...collect(cf, FLOW.eps.tags, 'USD/shares')]) {
+    if (f.e < annualYears[0].start) continue;
+    const b = basis.perShare(f.filed);
+    if (Math.abs(Math.log(b)) > Math.abs(Math.log(splitFactor))) splitFactor = b;
+  }
 
   return {
     cik,
     name: cf.entityName,
     currency: 'USD',
-    fiscalYearEnd: sub?.fiscalYearEnd ?? null,
+    fiscalYearEnd: annualYears.length ? annualYears[annualYears.length - 1].end.slice(5).replace('-', '') : null,
     lineItems: LINE_ITEMS,
     annual,
     quarterly,
     ttm,
-    filings,
+    filings: [],
+    splitAdjusted: Math.abs(splitFactor - 1) > 0.045 ? Math.round(splitFactor * 1000) / 1000 : null,
     source: 'SEC EDGAR XBRL company facts (10-K / 10-Q filings)',
   };
 }
 
-export function companyFinancials(cik: number): Promise<Financials | null> {
-  return cached('financials', String(cik), 12 * HOUR, () => build(cik));
+async function loadFilings(cik: number): Promise<{ filings: Financials['filings']; fiscalYearEnd: string | null }> {
+  const sub = await sec.submission(cik, 300).catch(() => null);
+  const filings = (sub?.filings ?? [])
+    .filter((f) => ['10-K', '10-Q', '20-F', '40-F', 'DEF 14A', '8-K'].includes(f.form))
+    .slice(0, 40)
+    .map((f) => ({ form: f.form, filed: f.filed, reportDate: f.reportDate, url: sec.filingUrl(cik, f.accn, f.doc) }));
+  return { filings, fiscalYearEnd: sub?.fiscalYearEnd ?? null };
+}
+
+/**
+ * Statements only (one SEC request). Used by the background checklist ranking,
+ * which accepts an older copy as long as the company has not reported since.
+ */
+export function companyFinancialsCore(cik: number, ttlMs = 12 * HOUR, background = false): Promise<Financials | null> {
+  return cached(CACHE_NS, String(cik), ttlMs, () => build(cik, background), { noMemory: true });
+}
+
+/** Statements plus the list of recent filings, for the company page. */
+export async function companyFinancials(cik: number): Promise<Financials | null> {
+  const [core, extra] = await Promise.all([companyFinancialsCore(cik), cached('filings', String(cik), 12 * HOUR, () => loadFilings(cik)).catch(() => null)]);
+  if (!core) return null;
+  return { ...core, filings: extra?.filings ?? [], fiscalYearEnd: extra?.fiscalYearEnd ?? core.fiscalYearEnd };
 }

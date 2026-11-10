@@ -103,6 +103,7 @@ export default function FinancialsTab({ fin }: { fin: Financials }) {
         <span className="note">{fin.source}{fin.fiscalYearEnd ? ` · fiscal year ends ${fin.fiscalYearEnd.slice(0, 2)}/${fin.fiscalYearEnd.slice(2)}` : ''}</span>
       </div>
 
+      {fin.splitAdjusted && <div className="banner">Share counts, EPS and dividends per share for earlier years are restated for a stock split (factor {fin.splitAdjusted}), using the comparative figures in the company’s later filings.</div>}
       <Card title="Charts" sub="Pick a preset or tick any row in the tables below to chart it. Metrics in different units get their own chart.">
         <div className="row" style={{ marginBottom: 10 }}>
           {PRESETS.map((p) => <button key={p.id} className="btn small" aria-pressed={p.keys.join() === prefs.keys.join()} onClick={() => setPrefs({ ...prefs, keys: p.keys })}>{p.label}</button>)}

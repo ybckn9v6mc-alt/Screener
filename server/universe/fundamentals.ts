@@ -224,6 +224,40 @@ function instantAt(facts: Fact[] | undefined, date: string): number | null {
   return best ? best.v : null;
 }
 
+const SPLIT_RATIOS = [2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+
+/**
+ * Bulk data carries one EPS figure per fiscal year, and years before a stock split are
+ * never restated, so EPS appears to collapse at the split. Net income ÷ EPS gives the
+ * share count each year was stated on; when it jumps between two years by a
+ * conventional split ratio while profit did not move in step, the earlier years are
+ * converted to the later basis. (Companies analysed individually get an exact
+ * adjustment from their own restated filings instead.)
+ */
+function splitAdjustedEps(eps: Fact[], income: Fact[]): Fact[] {
+  if (eps.length < 2) return eps;
+  const niByEnd = new Map(income.map((f) => [f.e, f.v]));
+  const out = eps.map((f) => ({ ...f }));
+  let factor = 1;
+  for (let i = out.length - 1; i > 0; i--) {
+    const niNew = niByEnd.get(eps[i].e);
+    const niOld = niByEnd.get(eps[i - 1].e);
+    if (isNum(niNew) && isNum(niOld) && eps[i].v !== 0 && eps[i - 1].v !== 0) {
+      const sharesNew = niNew / eps[i].v;
+      const sharesOld = niOld / eps[i - 1].v;
+      if (sharesNew > 0 && sharesOld > 0) {
+        const jump = sharesNew / sharesOld;
+        const snapped = SPLIT_RATIOS.find((r) => Math.abs(jump / r - 1) < 0.05) ?? (SPLIT_RATIOS.find((r) => Math.abs(jump * r - 1) < 0.05) ? 1 / (SPLIT_RATIOS.find((r) => Math.abs(jump * r - 1) < 0.05) as number) : null);
+        // A merger or share issue moves profit along with the share count; a split does not.
+        const profitMove = niOld > 0 && niNew > 0 ? Math.abs(Math.log(niNew / niOld)) : 0;
+        if (snapped != null && profitMove < Math.abs(Math.log(jump)) * 0.6) factor *= snapped;
+      }
+    }
+    out[i - 1].v = eps[i - 1].v / factor;
+  }
+  return out;
+}
+
 function nYearGrowth(series: Fact[], years: number): number | null {
   const last = latest(series);
   if (!last) return null;
@@ -309,7 +343,7 @@ function compute(cik: number, data: CikData, today: string): Fundamentals | null
 
   const pf = latest(dedupe(data.i.publicFloat ?? []));
   const revAnnual = annualSeries(data.d.revenue);
-  const epsAnnual = annualSeries(data.d.eps);
+  const epsAnnual = splitAdjustedEps(annualSeries(data.d.eps), annualSeries(data.d.netIncome));
   const asOf = rev?.end ?? ni?.end ?? balanceDate;
 
   return {

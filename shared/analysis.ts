@@ -1,5 +1,5 @@
 import type { Financials, StatementSet } from './financials.ts';
-import type { Answer } from './checklist.ts';
+import { QUANT_TESTS, QUESTIONS, runTest, type Answer, type QuantTestDef, type TestResult } from './checklist.ts';
 import { dcf, stressTests, type DcfInputs, type DcfResult } from './valuation.ts';
 
 /**
@@ -146,14 +146,34 @@ export interface ValuationDefaults {
   history: { label: string; value: number | null }[];
   latestFcfPerShare: number | null;
   eps: number | null;
+  /** Which share count turned company totals into per-share figures. */
+  shareBasis: 'filings' | 'market' | 'none';
+  sharesUsed: number | null;
+  shareBasisNote: string | null;
 }
 
 const roundTo = (v: number, step: number) => Math.round(v / step) * step;
 
-export function valuationDefaults(fin: Financials, price: number | null): ValuationDefaults {
+/**
+ * marketShares is market value / price: the number of *listed* shares the price refers to.
+ * It replaces the share count in the filings when the two disagree by more than 15%, which
+ * happens for share classes with different economic weight (Berkshire A vs B), ADRs that
+ * represent several ordinary shares, and splits that took effect after the last filing.
+ */
+export function valuationDefaults(fin: Financials, price: number | null, marketShares?: number | null): ValuationDefaults {
   const a = fin.annual;
   const n = a.periods.length;
-  const sharesNow = [fin.ttm?.values.sharesDiluted, a.values.sharesDiluted?.[n - 1]].find((v) => isNum(v) && v > 0) ?? null;
+  const filed = [fin.ttm?.values.sharesDiluted, a.values.sharesDiluted?.[n - 1]].find((v) => isNum(v) && v > 0) ?? null;
+  let sharesNow: number | null = filed;
+  let shareBasis: ValuationDefaults['shareBasis'] = filed ? 'filings' : 'none';
+  let shareBasisNote: string | null = null;
+  if (isNum(marketShares) && marketShares > 0 && (!filed || Math.abs(marketShares / filed - 1) > 0.15)) {
+    sharesNow = marketShares;
+    shareBasis = 'market';
+    shareBasisNote = filed
+      ? `Per-share figures use the ${fmtShares(marketShares)} shares implied by market value ÷ price, because the filings show ${fmtShares(filed)} (a different share class, an ADR ratio, or a split since the last filing).`
+      : `The filings give no usable share count, so per-share figures use the ${fmtShares(marketShares)} shares implied by market value ÷ price.`;
+  }
   const perShare = (total: number | null) => (isNum(total) && isNum(sharesNow) && sharesNow > 0 ? total / sharesNow : null);
   const lastN = (key: string, k: number) => nums((a.values[key] ?? []).slice(-k));
   const meanOf = (key: string, k: number) => (lastN(key, k).length === k ? avg(lastN(key, k)) : null);
@@ -167,7 +187,9 @@ export function valuationDefaults(fin: Financials, price: number | null): Valuat
     { id: 'oe1', label: 'Latest fiscal year owner earnings', value: perShare(oeLatest), how: 'Net income + D&A − maintenance capex for the latest fiscal year.' },
     { id: 'fcf5', label: '5-year average free cash flow', value: perShare(meanOf('fcf', 5)), how: 'Average of the last five fiscal years, divided by today’s diluted shares.' },
     { id: 'fcfttm', label: 'Trailing twelve months free cash flow', value: perShare(fin.ttm?.values.fcf ?? null), how: 'Last four reported quarters.' },
-    { id: 'eps', label: 'Diluted EPS (latest fiscal year)', value: a.values.eps?.[n - 1] ?? null, how: 'Reported earnings per share — shown for reference; it ignores capital spending.' },
+    shareBasis === 'market'
+      ? { id: 'eps', label: 'Net income per share (latest fiscal year)', value: perShare(a.values.netIncome?.[n - 1] ?? null), how: 'Net income divided by the same share count — shown for reference; it ignores capital spending.' }
+      : { id: 'eps', label: 'Diluted EPS (latest fiscal year)', value: a.values.eps?.[n - 1] ?? null, how: 'Reported earnings per share — shown for reference; it ignores capital spending.' },
   ];
   // Conservative default: the lowest positive figure among the 3-year averages and latest-year values.
   const core = options.filter((o) => ['fcf3', 'oe3', 'fcf1', 'oe1'].includes(o.id) && isNum(o.value));
@@ -213,8 +235,17 @@ export function valuationDefaults(fin: Financials, price: number | null): Valuat
     growthWhy,
     history: hist,
     latestFcfPerShare: perShare(fin.ttm?.values.fcf ?? fcfLatest),
-    eps: fin.ttm?.values.eps ?? a.values.eps?.[n - 1] ?? null,
+    eps: shareBasis === 'market' ? perShare(fin.ttm?.values.netIncome ?? a.values.netIncome?.[n - 1] ?? null) : fin.ttm?.values.eps ?? a.values.eps?.[n - 1] ?? null,
+    shareBasis,
+    sharesUsed: sharesNow,
+    shareBasisNote,
   };
+}
+
+function fmtShares(v: number): string {
+  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  return v.toFixed(0);
 }
 
 // ---------------------------------------------------------------------------------
@@ -526,16 +557,9 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
       { label: 'Terminal value share', value: pc(r.terminalShare, 0) },
     ], 'Valuation tab.');
   }
-  data('v3', r.status === 'AT / BELOW BUY ZONE' ? 'Yes' : r.status === 'ABOVE BUY ZONE' ? 'No' : 'Uncertain', r.status === 'NEEDS INPUT / FIX' ? 'The valuation model needs valid inputs first.' : `Price $${(i.price ?? 0).toFixed(2)} vs buy-below $${(r.buyBelow ?? 0).toFixed(2)} (intrinsic value $${(r.intrinsicValue ?? 0).toFixed(2)} less a ${pc(i.marginOfSafety, 0)} margin of safety).`, [
-    { label: 'Discount to intrinsic value', value: pc(r.discountToValue) },
-  ], 'Valuation tab.');
-  {
-    const st = r.valid ? stressTests(i) : [];
-    const singles = st.slice(0, 3);
-    const allHold = singles.length === 3 && singles.every((x) => x.holds === true);
-    const anyKnown = singles.some((x) => x.holds != null);
-    data('v4', !r.valid || !anyKnown ? 'Uncertain' : allHold ? 'Yes' : 'No', !r.valid ? 'The valuation model needs valid inputs first.' : allHold ? 'Intrinsic value stays above today’s price under each of the three stress tests.' : `Value falls below today’s price under: ${singles.filter((x) => x.holds === false).map((x) => x.label.toLowerCase()).join('; ')}.`, st.map((x) => ({ label: x.label, value: isNum(x.value) ? `$${x.value.toFixed(2)}` : 'n/a' })), 'Valuation tab: stress tests.');
-  }
+  const ps = priceSuggestions(i, r);
+  out.v3 = ps.v3;
+  out.v4 = ps.v4;
   return out;
 }
 
@@ -546,3 +570,105 @@ export function isSpecialistSector(sector: string, sic?: string | null): boolean
 }
 
 export { dcf };
+
+// ---------------------------------------------------------------------------------
+// One composition for the company page and the front-page ranking, so both always agree
+// ---------------------------------------------------------------------------------
+
+export interface AnalyseInput {
+  fin: Financials | null;
+  price: number | null;
+  marketCap?: number | null;
+  sector: string;
+  industry: string;
+  thresholds?: Record<string, number>;
+  overrides?: Partial<DcfInputs>;
+}
+
+export interface QuantTestRow {
+  def: QuantTestDef;
+  value: number | null;
+  threshold: number;
+  result: TestResult;
+}
+
+export function analyse(input: AnalyseInput) {
+  const { fin, price } = input;
+  const marketShares = isNum(input.marketCap) && isNum(price) && price > 0 ? input.marketCap / price : null;
+  const worksheet = fin ? buildWorksheet(fin) : null;
+  const summary = worksheet ? ratioSummary(worksheet) : null;
+  const defaults = fin ? valuationDefaults(fin, price, marketShares) : null;
+  const base: DcfInputs = defaults?.inputs ?? { price, ownerEarnings: null, marginOfSafety: 0.25, discountRate: 0.1, growth1to5: 0.05, growth6to10: 0.03, terminalGrowth: 0.02 };
+  const overrides = input.overrides ?? {};
+  const inputs: DcfInputs = { ...base, ...overrides, price: overrides.price ?? price };
+  const result = dcf(inputs);
+  const thresholds: Record<string, number> = Object.fromEntries(QUANT_TESTS.map((t) => [t.id, input.thresholds?.[t.id] ?? t.threshold]));
+  const tests: QuantTestRow[] = QUANT_TESTS.map((t) => {
+    const value = summary ? ((summary as unknown as Record<string, number | null>)[t.id] ?? null) : null;
+    return { def: t, value, threshold: thresholds[t.id], result: runTest(t, value, thresholds[t.id]) };
+  });
+  const suggestions = suggestAnswers({ fin, worksheet, summary, thresholds, dcfInputs: inputs, dcfResult: result, sector: input.sector, industry: input.industry });
+  return { worksheet, summary, defaults, inputs, result, thresholds, tests, suggestions };
+}
+
+export interface AutoScore {
+  /** Weighted points from questions the data answered Yes. */
+  points: number;
+  /** Total weight of the questions the data can answer at all. */
+  max: number;
+  yes: number;
+  no: number;
+  uncertain: number;
+  questions: number;
+  /** Required gates the data answered No (a hard stop in the workbook). */
+  gatesFailed: string[];
+}
+
+/** The questions that financial data can answer on its own (everything else needs the reader). */
+export const DATA_QUESTION_IDS = ['m3', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'v1', 'v2', 'v3', 'v4'];
+
+/** Score over the data-answerable questions only, using the workbook's weights. */
+export function autoScore(answers: Record<string, Answer>): AutoScore {
+  const out: AutoScore = { points: 0, max: 0, yes: 0, no: 0, uncertain: 0, questions: 0, gatesFailed: [] };
+  for (const q of QUESTIONS) {
+    if (!DATA_QUESTION_IDS.includes(q.id)) continue;
+    const a = answers[q.id] ?? '';
+    out.max += q.weight;
+    out.questions++;
+    if (a === 'Yes') {
+      out.points += q.weight;
+      out.yes++;
+    } else if (a === 'No') {
+      out.no++;
+      if (q.gate) out.gatesFailed.push(q.id);
+    } else out.uncertain++;
+  }
+  return out;
+}
+
+/**
+ * The two checklist answers that move with the share price. suggestAnswers uses this
+ * too, so a ranking can refresh them for a new price without reloading the statements
+ * and still agree exactly with the company page.
+ */
+export function priceSuggestions(i: DcfInputs, r: DcfResult): { v3: Suggestion; v4: Suggestion } {
+  const v3: Suggestion = {
+    kind: 'data',
+    answer: r.status === 'AT / BELOW BUY ZONE' ? 'Yes' : r.status === 'ABOVE BUY ZONE' ? 'No' : 'Uncertain',
+    reason: r.status === 'NEEDS INPUT / FIX' ? 'The valuation model needs valid inputs first.' : `Price $${(i.price ?? 0).toFixed(2)} vs buy-below $${(r.buyBelow ?? 0).toFixed(2)} (intrinsic value $${(r.intrinsicValue ?? 0).toFixed(2)} less a ${pc(i.marginOfSafety, 0)} margin of safety).`,
+    facts: [{ label: 'Discount to intrinsic value', value: pc(r.discountToValue) }],
+    verify: 'Valuation tab.',
+  };
+  const st = r.valid ? stressTests(i) : [];
+  const singles = st.slice(0, 3);
+  const allHold = singles.length === 3 && singles.every((x) => x.holds === true);
+  const anyKnown = singles.some((x) => x.holds != null);
+  const v4: Suggestion = {
+    kind: 'data',
+    answer: !r.valid || !anyKnown ? 'Uncertain' : allHold ? 'Yes' : 'No',
+    reason: !r.valid ? 'The valuation model needs valid inputs first.' : allHold ? 'Intrinsic value stays above today’s price under each of the three stress tests.' : `Value falls below today’s price under: ${singles.filter((x) => x.holds === false).map((x) => x.label.toLowerCase()).join('; ')}.`,
+    facts: st.map((x) => ({ label: x.label, value: isNum(x.value) ? `$${x.value.toFixed(2)}` : 'n/a' })),
+    verify: 'Valuation tab: stress tests.',
+  };
+  return { v3, v4 };
+}

@@ -9,6 +9,7 @@ import EChart, { chrome } from '../components/EChart';
 import MiniChart from '../components/MiniChart';
 import { Card, ErrorNote, Legend, Loading, Seg } from '../components/ui';
 import CompareLab from '../components/CompareLab';
+import BuffettTop from '../components/BuffettTop';
 
 // ---------------------------------------------------------------- index board
 
@@ -514,6 +515,13 @@ export default function Home() {
           <FearGreedPanel />
           <BuffettPanel />
         </div>
+      </section>
+      <section>
+        <div className="section-title">
+          <h2>Quality at a sensible price</h2>
+          <span className="note">The checklist, run across the whole market</span>
+        </div>
+        <BuffettTop />
       </section>
       <section>
         <div className="section-title">

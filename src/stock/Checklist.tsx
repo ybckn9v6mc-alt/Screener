@@ -39,7 +39,7 @@ function AnswerButtons({ value, onChange, label }: { value: Answer; onChange: (a
 }
 
 export default function Checklist({ a, symbol, fin, finError }: { a: Analysis; symbol: string; fin: Financials | null; finError: string | null }) {
-  const { check, setCheck, card, verdict, suggestions, effective, isAuto, tests, worksheet, summary, result } = a;
+  const { check, setCheck, card, dataScore, verdict, suggestions, effective, isAuto, tests, worksheet, summary, result } = a;
   const [filter, setFilter] = useState<'all' | 'open' | 'gates'>('all');
   const [openNotes, setOpenNotes] = useState<Record<string, boolean>>({});
   const setAnswer = (id: string, ans: Answer) => setCheck({ ...check, answers: { ...check.answers, [id]: ans } });
@@ -56,6 +56,7 @@ export default function Checklist({ a, symbol, fin, finError }: { a: Analysis; s
     <div className="stack">
       {a.specialist && <div className="banner warn">{symbol} is a financial or real-estate company. The workbook labels these “specialist sector review”: leverage screens, ROIC and the generic cash-flow model need sector-specific interpretation.</div>}
       {finError && <div className="banner warn">{finError} Data-driven answers are unavailable; the checklist can still be completed by hand.</div>}
+      {fin?.splitAdjusted && <div className="banner">Share counts and per-share figures for earlier years have been restated for a stock split (factor {fin.splitAdjusted}), using the comparative figures in the company’s later filings, so growth and dilution are measured on one basis.</div>}
 
       <div className={`verdict ${verdict.tone}`}>
         <div className="stat-label">Combined assessment</div>
@@ -77,6 +78,7 @@ export default function Checklist({ a, symbol, fin, finError }: { a: Analysis; s
           <div><div className="stat-label">Checklist completed</div><div className="stat-value num">{card.completed} / {card.total}</div><div className="small muted">{card.uncertainOrBlank} uncertain or blank</div></div>
           <div><div className="stat-label">Required gates</div><div className="stat-value">{card.gates}</div><div className="small muted">{card.gatesNo ? `${card.gatesNo} marked No` : 'All eight must be Yes'}</div></div>
           <div><div className="stat-label">Price vs buy zone</div><div className="stat-value">{zone}</div><div className="small muted">{isNum(result.discountToValue) ? (result.discountToValue >= 0 ? `Price is ${fmtPct(result.discountToValue, 0)} below intrinsic value` : `Price is ${fmtPct(-result.discountToValue, 0)} above intrinsic value`) : 'Complete the valuation'}</div></div>
+          <div title="The score the front-page ranking uses: only the questions financial data can answer, ignoring your own answers"><div className="stat-label">Answered from data</div><div className="stat-value num">{dataScore.points} / {dataScore.max}</div><div className="small muted">{dataScore.yes} of {dataScore.questions} questions Yes</div></div>
           <div><div className="stat-label">Quant screens</div><div className="stat-value num">{passCount} / {tests.length}</div><div className="small muted">{tests.filter((t) => t.result === 'NO DATA').length} without data</div></div>
         </div>
         <p className="note" style={{ marginTop: 12 }}>A qualifying label is not a buy recommendation. Confirm data quality, business resilience, a downside scenario, and whether the holding fits your portfolio.</p>

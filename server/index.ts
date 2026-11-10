@@ -16,6 +16,7 @@ import { runScreener, screenerMeta, searchSymbols, peersOf, marketOverview } fro
 import { companyFinancials } from './company/financials.ts';
 import { stockDetail } from './company/detail.ts';
 import { getEntity } from './universe/entities.ts';
+import { buffettTop } from './company/ranking.ts';
 
 const app = express();
 app.disable('x-powered-by');
@@ -74,6 +75,8 @@ app.get('/api/market/buffett', wrap(async () => {
   const b = await buffettIndicator();
   return { ...b, history: thin(b.history, 2500) };
 }));
+
+app.get('/api/market/buffett-top', wrap(async (req) => buffettTop(Math.min(50, Math.max(1, Number(req.query.limit) || 10)))));
 
 app.get('/api/market/yields', wrap(async () => {
   const t = await cached('fed', 'h15-treasury', 6 * 60 * MIN, () => fed.h15Treasury(), { noMemory: true });
