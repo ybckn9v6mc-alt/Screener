@@ -354,3 +354,4 @@ details.method li { margin: 4px 0; }
   .fg-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; }
   .fg-row > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
 }
+.btn[aria-pressed='true'] { background: var(--accent-wash); border-color: var(--accent); color: var(--accent-ink); }
