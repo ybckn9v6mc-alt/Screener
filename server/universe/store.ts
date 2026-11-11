@@ -53,7 +53,7 @@ export function noteError(msg: string) {
 
 const SNAP = () => path.join(config.dataDir, 'universe', 'snapshot.json');
 /** Bump when the rules that derive stored fundamentals change. */
-const SNAPSHOT_VERSION = 2;
+const SNAPSHOT_VERSION = 3;
 
 let dirty = false;
 export const markDirty = () => {

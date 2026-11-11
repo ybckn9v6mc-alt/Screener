@@ -11,7 +11,7 @@ import { loadMembership } from './membership.ts';
 import { applyLevels, computeLevels } from './technicals.ts';
 import { state, noteError, markDirty, saveSnapshot, loadSnapshot, readBars, writeBars, type LevelsMeta } from './store.ts';
 import type { Bar, StockRow } from '../../shared/types.ts';
-import { applyRanking, loadRanking, refreshRanking, saveRanking } from '../company/ranking.ts';
+import { applyRanking, loadRanking, refreshRanking, refreshRanks, saveRanking } from '../company/ranking.ts';
 
 const HISTORY_DAYS = 760;
 
@@ -791,6 +791,7 @@ export async function startUniverse(): Promise<void> {
     loop('earnings', () => HOUR, refreshEarnings);
     // Checklist analysis of larger companies: one SEC request each, then only when they report again.
     loop('checklist ranking', () => 5 * MIN, refreshRanking);
+    loop('checklist ranks', () => 2 * MIN, async () => refreshRanks());
     if (config.enrich) {
       loop('enrichment', () => 20_000, async () => {
         // Wait for the price history crawl so the two do not compete for the same host.

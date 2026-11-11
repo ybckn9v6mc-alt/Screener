@@ -442,6 +442,14 @@ export const FILTERS: FilterDef[] = [
     ],
   },
   {
+    id: 'buffettRank', label: 'Buffett Checklist Rank', tab: 'fundamental', custom: { field: 'buffettRank', scale: 1, unit: '' },
+    help: 'Place in the front-page ranking: companies above $2 billion that pass every rule (no failed gate, at least four years of statements, a positive valuation), one listing per company.',
+    options: [
+      opt('ranked', 'Ranked (passes every rule)', { op: 'notnull', field: 'buffettRank' }),
+      ...[10, 25, 50, 100, 250].map((n) => opt(`top${n}`, `Top ${n}`, { op: 'le', field: 'buffettRank', value: n } as Cond)),
+    ],
+  },
+  {
     id: 'buffettGates', label: 'Checklist Gates (data)', tab: 'fundamental',
     help: 'Whether the data answers No to any required gate it can judge: recurring owner cash, conservative leverage, an estimable owner-earnings figure.',
     options: [opt('pass', 'No gate failed', { op: 'eq', field: 'buffettGates', value: 'pass' }), opt('fail', 'A gate failed', { op: 'eq', field: 'buffettGates', value: 'fail' })],

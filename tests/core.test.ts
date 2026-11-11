@@ -9,6 +9,7 @@ import type { Bar } from '../shared/types';
 import { buildFinancials } from '../server/company/financials';
 import type { CompanyFacts, CompanyFact } from '../server/sources/sec';
 import { analyse, autoScore, priceSuggestions, DATA_QUESTION_IDS } from '../shared/analysis';
+import { rankOrder } from '../server/company/ranking';
 
 describe('intrinsic value model (workbook "Valuation" sheet)', () => {
   const inputs = { price: 60, ownerEarnings: 5, marginOfSafety: 0.25, discountRate: 0.1, growth1to5: 0.05, growth6to10: 0.03, terminalGrowth: 0.02 };
@@ -208,7 +209,7 @@ describe('parsing helpers', () => {
 // ---------------------------------------------------------------------------------
 
 /** A tiny synthetic filer: one 10-K per fiscal year, each repeating two prior years as comparatives. */
-function filer(opts: { years: number[]; shares: (fy: number, filedYear: number) => number; eps: (fy: number, filedYear: number) => number; extra?: (facts: Record<string, CompanyFact[]>) => void }): CompanyFacts {
+function filer(opts: { years: number[]; shares: (fy: number, filedYear: number) => number; eps: (fy: number, filedYear: number) => number; extra?: (facts: Record<string, CompanyFact[]>, instants: Record<string, CompanyFact[]>) => void }): CompanyFacts {
   const usd: Record<string, CompanyFact[]> = { NetIncomeLoss: [], Revenues: [], NetCashProvidedByUsedInOperatingActivities: [], PaymentsToAcquirePropertyPlantAndEquipment: [], DepreciationDepletionAndAmortization: [], OperatingIncomeLoss: [] };
   const sharesFacts: CompanyFact[] = [];
   const epsFacts: CompanyFact[] = [];
@@ -238,7 +239,7 @@ function filer(opts: { years: number[]; shares: (fy: number, filedYear: number) 
       }
     }
   }
-  opts.extra?.(usd);
+  opts.extra?.(usd, instants);
   const wrap = (unit: string, facts: CompanyFact[]) => ({ label: null, description: null, units: { [unit]: facts } });
   const gaap: CompanyFacts['facts'][string] = {};
   for (const [tag, facts] of Object.entries({ ...usd, ...instants })) gaap[tag] = wrap('USD', facts);
@@ -330,5 +331,139 @@ describe('data-only checklist score (front-page ranking)', () => {
     expect(cheap.suggestions.v3.answer).toBe('Yes');
     expect(dear.suggestions.v3.answer).toBe('No');
     expect(cheap.inputs.ownerEarnings).toBe(dear.inputs.ownerEarnings); // per-share inputs do not move with price
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// Missing data is never good news: capital spending, debt, proxy-statement figures
+// ---------------------------------------------------------------------------------
+
+describe('statements: missing or unusual captions', () => {
+  const years = [2019, 2020, 2021, 2022, 2023, 2024, 2025];
+  const income = (fy: number) => 500e6 + (fy - 2019) * 100e6;
+  const base = { years, shares: () => 100e6, eps: (fy: number) => income(fy) / 100e6 };
+  const annualFact = (fy: number, val: number, form = '10-K'): CompanyFact => ({ start: `${fy}-01-01`, end: `${fy}-12-31`, val, accn: `x-${fy}`, fy, fp: 'FY', form, filed: `${fy + 1}-02-15` });
+  const instantFact = (fy: number, val: number): CompanyFact => ({ end: `${fy}-12-31`, val, accn: `x-${fy}`, fy, fp: 'FY', form: '10-K', filed: `${fy + 1}-02-15` });
+  const last = (a: (number | null)[]) => a[a.length - 1];
+
+  it('leaves free cash flow unknown when capital spending is not tagged, and does not value or rank on it', () => {
+    const fin = buildFinancials(1, filer({ ...base, extra: (usd) => { delete usd.PaymentsToAcquirePropertyPlantAndEquipment; } }))!;
+    expect(fin.annual.values.capex.every((v) => v == null)).toBe(true);
+    expect(fin.annual.values.fcf.every((v) => v == null)).toBe(true); // not operating cash flow
+    expect(fin.annual.values.ownerEarnings.every((v) => v == null)).toBe(true);
+    const a = analyse({ fin, price: 50, marketCap: 50 * 100e6, sector: 'Industrials', industry: 'Shipping' });
+    expect(a.inputs.ownerEarnings).toBeNull();
+    expect(a.result.valid).toBe(false);
+    expect(a.defaults!.ownerEarningsWhy).toMatch(/capital spending/);
+    for (const id of ['f2', 'f3', 'f6', 'v1']) expect(a.suggestions[id].answer).toBe('Uncertain');
+  });
+
+  it('adds up separate capital-spending lines and prefers a stated total when it is larger', () => {
+    const lines = buildFinancials(1, filer({
+      ...base,
+      extra: (usd) => {
+        delete usd.PaymentsToAcquirePropertyPlantAndEquipment;
+        usd.PaymentsToAcquireOilAndGasPropertyAndEquipment = years.map((fy) => annualFact(fy, income(fy) * 0.5));
+        usd.PaymentsToAcquireOtherPropertyPlantAndEquipment = years.map((fy) => annualFact(fy, income(fy) * 0.1));
+      },
+    }))!;
+    expect(last(lines.annual.values.capex)).toBeCloseTo(income(2025) * 0.6, 0);
+    expect(last(lines.annual.values.fcf)).toBeCloseTo(income(2025) * (1.2 - 0.6), 0);
+    const total = buildFinancials(1, filer({ ...base, extra: (usd) => { usd.PaymentsToAcquireProductiveAssets = years.map((fy) => annualFact(fy, income(fy) * 0.9)); } }))!;
+    expect(last(total.annual.values.capex)).toBeCloseTo(income(2025) * 0.9, 0); // not 0.9 + 0.2
+  });
+
+  it('flags a capital-spending figure that is implausibly small for the asset base', () => {
+    const fin = buildFinancials(1, filer({
+      ...base,
+      extra: (usd, inst) => {
+        usd.PaymentsToAcquirePropertyPlantAndEquipment = years.map((fy) => annualFact(fy, income(fy) * 0.02));
+        usd.DepreciationDepletionAndAmortization = years.map((fy) => annualFact(fy, income(fy) * 0.6));
+        inst.PropertyPlantAndEquipmentNet = years.map((fy) => instantFact(fy, income(fy) * 4)); // two-thirds of assets
+      },
+    }))!;
+    const a = analyse({ fin, price: 50, marketCap: 50 * 100e6, sector: 'Industrials', industry: 'Rental' });
+    expect(a.inputs.ownerEarnings).toBeNull();
+    expect(a.suggestions.f6.answer).toBe('Uncertain');
+  });
+
+  it('reads debt from whichever caption the company uses, without counting a borrowing twice', () => {
+    const debtOf = (extra: (inst: Record<string, CompanyFact[]>, usd: Record<string, CompanyFact[]>) => void) =>
+      last(buildFinancials(1, filer({ ...base, extra: (usd, inst) => { delete inst.LongTermDebtNoncurrent; extra(inst, usd); } }))!.annual.values.totalDebt);
+    // Notes payable only (an equipment lessor).
+    expect(debtOf((inst) => { inst.NotesPayable = years.map((fy) => instantFact(fy, 600e6)); })).toBe(600e6);
+    // Senior notes and convertible debt are different borrowings: added.
+    expect(debtOf((inst) => { inst.SeniorNotes = years.map((fy) => instantFact(fy, 1800e6)); inst.ConvertibleDebt = years.map((fy) => instantFact(fy, 575e6)); })).toBe(2375e6);
+    // "Debt, current" already contains the current portion of long-term debt.
+    expect(debtOf((inst) => {
+      inst.LongTermDebtNoncurrent = years.map((fy) => instantFact(fy, 9000e6));
+      inst.DebtCurrent = years.map((fy) => instantFact(fy, 1500e6));
+      inst.LongTermDebtCurrent = years.map((fy) => instantFact(fy, 1500e6));
+    })).toBe(10500e6);
+    // The same borrowing under a balance-sheet caption and a note caption: counted once.
+    expect(debtOf((inst) => { inst.LongTermDebtNoncurrent = years.map((fy) => instantFact(fy, 5640e6)); inst.SecuredLongTermDebt = years.map((fy) => instantFact(fy, 5640e6)); })).toBe(5640e6);
+  });
+
+  it('treats debt as unknown, not zero, when a company pays interest but no debt caption can be read', () => {
+    const paying = buildFinancials(1, filer({ ...base, extra: (usd, inst) => { delete inst.LongTermDebtNoncurrent; usd.InterestPaidNet = years.map((fy) => annualFact(fy, 120e6)); } }))!;
+    expect(last(paying.annual.values.totalDebt)).toBeNull();
+    expect(last(paying.annual.values.roic)).toBeNull();
+    const a = analyse({ fin: paying, price: 50, marketCap: 50 * 100e6, sector: 'Consumer Discretionary', industry: 'Autos' });
+    expect(a.suggestions.f4.answer).toBe('Uncertain');
+    expect(a.suggestions.f1.answer).toBe('Uncertain');
+    // No caption and no interest: genuinely debt-free.
+    const clean = buildFinancials(1, filer({ ...base, extra: (_usd, inst) => { delete inst.LongTermDebtNoncurrent; } }))!;
+    expect(last(clean.annual.values.totalDebt)).toBe(0);
+  });
+
+  it('ignores figures repeated in proxy statements', () => {
+    // The pay-versus-performance table reports net income in thousands, filed after the 10-K.
+    const fin = buildFinancials(1, filer({ ...base, extra: (usd) => { for (const fy of years) usd.NetIncomeLoss.push({ ...annualFact(fy, income(fy) / 1000, 'DEF 14A'), filed: `${fy + 1}-04-01` }); } }))!;
+    fin.annual.values.netIncome.forEach((v, i) => expect(v).toBe(income(years[i])));
+  });
+
+  it('labels a 52-week year that ends in the first days of January with the year it covers', () => {
+    const cf = filer(base);
+    for (const tag of Object.values(cf.facts['us-gaap'])) for (const list of Object.values(tag.units)) for (const f of list) {
+      // Shift every period by one day: years now run 2 January to 1 January.
+      if (f.start) f.start = f.start.replace(/-01-01$/, '-01-02');
+      f.end = `${Number(f.end.slice(0, 4)) + 1}-01-01`;
+    }
+    const fin = buildFinancials(1, cf)!;
+    expect(fin.annual.periods.map((p) => p.label)).toEqual(years.map((y) => `FY${y}`));
+  });
+});
+
+describe('automatic valuation inputs', () => {
+  const years = [2019, 2020, 2021, 2022, 2023, 2024, 2025];
+  const income = (fy: number) => 500e6 + (fy - 2019) * 100e6;
+  const annualFact = (fy: number, val: number): CompanyFact => ({ start: `${fy}-01-01`, end: `${fy}-12-31`, val, accn: `x-${fy}`, fy, fp: 'FY', form: '10-K', filed: `${fy + 1}-02-15` });
+
+  it('never assumes faster growth than revenue has shown, and caps it at 10%', () => {
+    // Revenue flat, earnings rebounding from a poor year: the earnings growth rate must not drive the forecast.
+    const flat = buildFinancials(1, filer({ years, shares: () => 100e6, eps: (fy) => income(fy) / 100e6, extra: (usd) => { usd.Revenues = years.map((fy) => annualFact(fy, 4e9)); } }))!;
+    const a = analyse({ fin: flat, price: 50, marketCap: 50 * 100e6, sector: 'Consumer Discretionary', industry: 'Retail' });
+    expect(a.inputs.growth1to5).toBe(0);
+    expect(a.inputs.growth6to10).toBeLessThanOrEqual(a.inputs.growth1to5); // growth never speeds up later
+    expect(a.suggestions.v2.answer).toBe('Yes');
+    // Very fast growth is capped.
+    const fast = buildFinancials(1, filer({ years, shares: () => 100e6, eps: (fy) => (income(fy) * 1.5 ** (fy - 2019)) / 100e6, extra: (usd) => { usd.Revenues = years.map((fy) => annualFact(fy, 1e9 * 1.5 ** (fy - 2019))); } }))!;
+    const b = analyse({ fin: fast, price: 50, marketCap: 50 * 100e6, sector: 'Technology', industry: 'Software' });
+    expect(b.inputs.growth1to5).toBe(0.1);
+  });
+});
+
+describe('ranking order', () => {
+  it('keeps one listing per company and breaks ties by discount, then return on capital', () => {
+    const item = (symbol: string, cik: number, points: number, discount: number | null, roic: number | null, liquidity = 1) => ({ symbol, cik, points, discount, roic, liquidity });
+    const order = rankOrder([
+      item('LOW', 1, 20, 0.9, 0.5),
+      item('TIE.B', 2, 30, 0.1, 0.2, 5),
+      item('TIE.A', 2, 30, 0.1, 0.2, 50), // same company, more heavily traded
+      item('CHEAP', 3, 30, 0.4, 0.1),
+      item('ROIC', 4, 30, 0.1, 0.3),
+      item('NOVAL', 5, 30, null, 0.9),
+    ]).map((x) => x.symbol);
+    expect(order).toEqual(['CHEAP', 'ROIC', 'TIE.A', 'NOVAL', 'LOW']);
   });
 });

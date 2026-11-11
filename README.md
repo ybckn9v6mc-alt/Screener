@@ -1,7 +1,7 @@
 # Stock Screener
 
 A self-hosted, Finviz-style research app for US-listed stocks, built entirely on
-public data: a market dashboard, a 74-filter screener, deep company pages, a
+public data: a market dashboard, a 75-filter screener, deep company pages, a
 Buffett-style quality checklist and an automatic intrinsic-value calculator.
 
 No API keys are needed.
@@ -14,7 +14,7 @@ No API keys are needed.
 | **Sentiment & valuation** | A Fear & Greed index with its seven components and history back to 1991, and the Buffett Indicator (US market value / GDP) with history back to 1946 against its long-run trend. |
 | **Top 10 on the Buffett checklist** | Every non-financial company above $2 billion is scored on the 14 checklist questions that financial data can answer (34 points), using the same code as its own checklist page. The ten highest are listed with price, intrinsic value, buy-below price, margin of safety, ROIC, owner-earnings yield, leverage, cash conversion and share-count change; each row opens to show every answer and the reasoning. |
 | **Compare lab** | Put the S&P 500 next to Fear & Greed, the Buffett Indicator, VIX, Treasury yields, the yield curve, world indexes or any ticker. Stacked panels on a shared time axis, indexed to 100, or standardized; correlation readout and data table. |
-| **Screener** | Every US-listed common stock and ADR (about 5,900). 74 filters in Finviz's Descriptive / Fundamental / Technical layout, each with presets and custom ranges, including checklist score and price versus intrinsic value. Views: Overview, Valuation, Financial, Ownership, Performance, Buffett, Technical, Custom columns and Charts. Signals, saved screens, sorting, CSV export, shareable URLs. |
+| **Screener** | Every US-listed common stock and ADR (about 5,900). 75 filters in Finviz's Descriptive / Fundamental / Technical layout, each with presets and custom ranges, including checklist score and price versus intrinsic value. Views: Overview, Valuation, Financial, Ownership, Performance, Buffett, Technical, Custom columns and Charts. Signals, saved screens, sorting, CSV export, shareable URLs. |
 | **Company page** | Interactive price chart (candles/line/area, daily/weekly/monthly, 1D to max, SMA/EMA/Bollinger, volume, RSI, MACD, log scale, performance comparison), a Finviz-style snapshot, analysts, earnings history, ownership, insiders, dividends and SEC filing links. |
 | **Financials** | Up to 12 years annual and 16 quarters from SEC filings: income statement, cash flow, balance sheet, per-share figures and ratios. Tick any row to chart it. |
 | **Buffett checklist** | The 34 questions, 8 required gates, weights, 8 quant tests and 5-year worksheet from the Buffett Investment Qualification Checklist workbook. Questions that numbers can answer are answered automatically with the reasoning shown; judgment questions are left to you with supporting facts and where to verify. Your answers, evidence and thesis are saved per ticker in your browser. |
@@ -108,6 +108,15 @@ These are the places where the app deliberately differs from what you might assu
   verdict. Financial and real-estate companies are left out, as the workbook
   treats them as specialist cases, and a company is dropped if the data answers
   No to a required gate.
+- **Missing data is never treated as good news.** Companies describe capital
+  spending and debt with dozens of different XBRL captions. The app reads the
+  common ones (including oil-and-gas additions, rental-equipment purchases and
+  capitalized software, and notes, lines of credit and convertibles) and adds
+  separate lines together without counting a borrowing twice. When it still
+  cannot find a figure, the result is blank rather than zero: free cash flow is
+  not shown as equal to operating cash flow, a company that pays interest is not
+  shown as debt-free, and neither earns checklist points or a place in the
+  Top 10. Operating leases are listed but not counted as debt.
 - **Stock splits are restated.** SEC filings never restate years before a split,
   which would make share counts jump and EPS collapse. The app reads the split
   from the comparative figures in the company's later filings and puts every
@@ -124,8 +133,17 @@ These are the places where the app deliberately differs from what you might assu
 - **A blank means "not available"**, and a stock with a blank never passes a
   filter on that field.
 - **Automatic valuations are conservative starting points.** The default
-  owner-earnings figure is the lowest of four estimates, so it can sit well below
-  a company's reported earnings. Override any input; the page shows its working.
+  owner-earnings figure is the lowest of the three-year-average, latest-year and
+  trailing-twelve-month figures for free cash flow and owner earnings, so it can
+  sit well below reported earnings. Growth for years 1-5 is three-quarters of
+  the most cautious reading of the last five years (never above revenue growth,
+  zero if revenue fell in the latest year, capped at 10%). Return on invested
+  capital taxes operating income at 15-35% whatever the year's actual rate and
+  is capped at 100%. Override any input; the page shows its working.
+- **Holding-company reorganizations** give a company a new SEC registrant with
+  no history. The link to the old registrant is not published in a
+  machine-readable form, so known cases (currently Exxon Mobil) are listed in
+  `server/sources/sec.ts`.
 
 ## Layout
 
@@ -137,7 +155,7 @@ server/            Express API and background data collection
   company/         Per-company financial statements, checklist ranking and detail
 shared/            Logic used by both sides: filters, columns, checklist, valuation, analysis
 src/               React client (pages, stock tabs, chart components)
-tests/             Unit tests for the valuation model, checklist scoring, filters, indicators
+tests/             Unit tests for the valuation model, checklist scoring, statements, filters, indicators
 data/seed/         Ticker-to-SEC-filer map so the first start skips a 15-minute crawl
 ```
 

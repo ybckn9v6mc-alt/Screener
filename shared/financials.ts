@@ -36,6 +36,8 @@ export interface Financials {
   filings: { form: string; filed: string; reportDate: string; url: string }[];
   /** Set when older years were converted to today's share basis after a stock split (the largest factor applied). */
   splitAdjusted?: number | null;
+  /** The same, restricted to the last five fiscal years (the ones the checklist scores). */
+  splitAdjustedRecent?: number | null;
   source: string;
 }
 
@@ -53,8 +55,8 @@ export const LINE_ITEMS: LineItem[] = [
   { key: 'ebitda', label: 'EBITDA', section: 'income', fmt: 'money', note: 'Operating income + depreciation & amortization' },
 
   { key: 'cfo', label: 'Cash from operations', section: 'cashflow', fmt: 'money', strong: true },
-  { key: 'capex', label: 'Capital expenditures', section: 'cashflow', fmt: 'money' },
-  { key: 'fcf', label: 'Free cash flow', section: 'cashflow', fmt: 'money', strong: true, note: 'Cash from operations − capital expenditures' },
+  { key: 'capex', label: 'Capital expenditures', section: 'cashflow', fmt: 'money', note: 'All tagged purchases of property, equipment, oil and gas properties, rental equipment and capitalized software' },
+  { key: 'fcf', label: 'Free cash flow', section: 'cashflow', fmt: 'money', strong: true, note: 'Cash from operations − capital expenditures. Blank when capital spending is not tagged.' },
   { key: 'da', label: 'Depreciation & amortization', section: 'cashflow', fmt: 'money' },
   { key: 'sbc', label: 'Stock-based compensation', section: 'cashflow', fmt: 'money' },
   { key: 'ownerEarnings', label: 'Owner earnings (est.)', section: 'cashflow', fmt: 'money', strong: true, note: 'Net income + D&A − maintenance capex, where maintenance capex is taken as the lesser of capex and D&A' },
@@ -71,7 +73,8 @@ export const LINE_ITEMS: LineItem[] = [
   { key: 'goodwill', label: 'Goodwill & intangibles', section: 'balance', fmt: 'money' },
   { key: 'assets', label: 'Total assets', section: 'balance', fmt: 'money', strong: true },
   { key: 'currentLiabilities', label: 'Current liabilities', section: 'balance', fmt: 'money' },
-  { key: 'totalDebt', label: 'Total debt', section: 'balance', fmt: 'money' },
+  { key: 'totalDebt', label: 'Total debt', section: 'balance', fmt: 'money', note: 'Borrowings only. Blank when the company pays interest but describes its debt with captions this app cannot read.' },
+  { key: 'operatingLeases', label: 'Operating lease liabilities', section: 'balance', fmt: 'money', note: 'Shown for reference; not counted as debt in the leverage ratios' },
   { key: 'liabilities', label: 'Total liabilities', section: 'balance', fmt: 'money', strong: true },
   { key: 'equity', label: 'Shareholders’ equity', section: 'balance', fmt: 'money', strong: true },
   { key: 'netDebt', label: 'Net debt', section: 'balance', fmt: 'money', note: 'Total debt − cash & short-term investments' },
@@ -90,7 +93,7 @@ export const LINE_ITEMS: LineItem[] = [
   { key: 'netMargin', label: 'Net margin', section: 'ratios', fmt: 'pct' },
   { key: 'fcfMargin', label: 'FCF margin', section: 'ratios', fmt: 'pct' },
   { key: 'roe', label: 'Return on equity', section: 'ratios', fmt: 'pct', note: 'Net income / average shareholders’ equity' },
-  { key: 'roic', label: 'Return on invested capital', section: 'ratios', fmt: 'pct', note: 'After-tax operating income / average (debt + equity)' },
+  { key: 'roic', label: 'Return on invested capital', section: 'ratios', fmt: 'pct', note: 'After-tax operating income / average (debt + equity), taxed at the year’s effective rate held within 15–35%. Capped at 100%.' },
   { key: 'roa', label: 'Return on assets', section: 'ratios', fmt: 'pct' },
   { key: 'debtEq', label: 'Debt / equity', section: 'ratios', fmt: 'x' },
   { key: 'netDebtEbitda', label: 'Net debt / EBITDA', section: 'ratios', fmt: 'x' },

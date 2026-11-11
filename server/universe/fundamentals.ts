@@ -29,7 +29,7 @@ interface Concept {
 }
 
 const CONCEPTS: Record<string, Concept> = {
-  revenue: { kind: 'flow', unit: 'USD', history: true, tags: ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'SalesRevenueNet', 'RevenuesNetOfInterestExpense'] },
+  revenue: { kind: 'flow', unit: 'USD', history: true, tags: ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'SalesRevenueNet', 'RevenuesNetOfInterestExpense', 'RegulatedAndUnregulatedOperatingRevenue'] },
   costOfRevenue: { kind: 'flow', unit: 'USD', tags: ['CostOfRevenue', 'CostOfGoodsAndServicesSold', 'CostOfGoodsSold'] },
   grossProfit: { kind: 'flow', unit: 'USD', tags: ['GrossProfit'] },
   operatingIncome: { kind: 'flow', unit: 'USD', tags: ['OperatingIncomeLoss'] },
@@ -38,7 +38,7 @@ const CONCEPTS: Record<string, Concept> = {
   eps: { kind: 'flow', unit: 'USD-per-shares', history: true, tags: ['EarningsPerShareDiluted', 'EarningsPerShareBasicAndDiluted', 'EarningsPerShareBasic'] },
 
   cfo: { kind: 'annual', unit: 'USD', tags: ['NetCashProvidedByUsedInOperatingActivities', 'NetCashProvidedByUsedInOperatingActivitiesContinuingOperations'] },
-  capex: { kind: 'annual', unit: 'USD', tags: ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets', 'PaymentsForCapitalImprovements'] },
+  capex: { kind: 'annual', unit: 'USD', tags: ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets', 'PaymentsForCapitalImprovements', 'PaymentsToAcquireOilAndGasPropertyAndEquipment', 'PaymentsToExploreAndDevelopOilAndGasProperties'] },
   da: { kind: 'annual', unit: 'USD', tags: ['DepreciationDepletionAndAmortization', 'DepreciationAndAmortization', 'DepreciationAmortizationAndAccretionNet', 'Depreciation'] },
   tax: { kind: 'annual', unit: 'USD', tags: ['IncomeTaxExpenseBenefit'] },
   dividendsPaid: { kind: 'annual', unit: 'USD', tags: ['PaymentsOfDividendsCommonStock', 'PaymentsOfDividends'] },
@@ -52,7 +52,7 @@ const CONCEPTS: Record<string, Concept> = {
   currentLiabilities: { kind: 'instant', unit: 'USD', tags: ['LiabilitiesCurrent'] },
   equity: { kind: 'instant', unit: 'USD', tags: ['StockholdersEquity', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'] },
   ltDebtNoncurrent: { kind: 'instant', unit: 'USD', tags: ['LongTermDebtNoncurrent', 'LongTermDebtAndCapitalLeaseObligations', 'LongTermNotesPayable', 'ConvertibleNotesPayableNoncurrent'] },
-  ltDebtTotal: { kind: 'instant', unit: 'USD', tags: ['LongTermDebt', 'DebtLongtermAndShorttermCombinedAmount'] },
+  ltDebtTotal: { kind: 'instant', unit: 'USD', tags: ['LongTermDebt', 'DebtLongtermAndShorttermCombinedAmount', 'LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities', 'DebtAndCapitalLeaseObligations', 'NotesPayable', 'SeniorNotes'] },
   ltDebtCurrent: { kind: 'instant', unit: 'USD', tags: ['LongTermDebtCurrent', 'LongTermDebtAndCapitalLeaseObligationsCurrent'] },
   stDebt: { kind: 'instant', unit: 'USD', tags: ['DebtCurrent', 'ShortTermBorrowings', 'CommercialPaper'] },
   publicFloat: { kind: 'instant', unit: 'USD', tax: 'dei', tags: ['EntityPublicFloat'] },
@@ -302,7 +302,9 @@ function compute(cik: number, data: CikData, today: string): Fundamentals | null
 
   const cfo = fy('cfo')?.v ?? null;
   const capexRaw = fy('capex')?.v ?? null;
-  const fcf = isNum(cfo) ? cfo - Math.abs(capexRaw ?? 0) : null;
+  // Without a capital-spending figure free cash flow is unknown; it is not operating cash flow.
+  // (Larger companies get theirs from their own cash-flow statement, which reads every capex line.)
+  const fcf = isNum(cfo) && isNum(capexRaw) ? cfo - Math.abs(capexRaw) : null;
   const da = fy('da')?.v ?? null;
   const ebitda = isNum(operatingIncome) && isNum(da) ? operatingIncome + da : null;
 
@@ -326,7 +328,7 @@ function compute(cik: number, data: CikData, today: string): Fundamentals | null
   const taxFact = fy('tax');
   const preFy = latest(annualSeries(data.d.pretax));
   let taxRate = 0.21;
-  if (taxFact && preFy && preFy.e === taxFact.e && preFy.v > 0) taxRate = Math.min(0.35, Math.max(0, taxFact.v / preFy.v));
+  if (taxFact && preFy && preFy.e === taxFact.e && preFy.v > 0) taxRate = Math.min(0.35, Math.max(0.15, taxFact.v / preFy.v));
   const invested = isNum(equity) && isNum(debt) ? equity + debt : null;
   const roic = isNum(operatingIncome) && isNum(invested) && invested > 0 ? (operatingIncome * (1 - taxRate)) / invested : null;
 
@@ -414,6 +416,15 @@ export async function fetchAllFundamentals(onProgress?: (done: number, total: nu
     done++;
     onProgress?.(done, reqs.length);
   });
+  // A successor registrant inherits its predecessor's history (see sec.PREDECESSOR).
+  for (const [succ, pred] of Object.entries(sec.PREDECESSOR)) {
+    const old = store.get(pred);
+    if (!old) continue;
+    const cur = store.get(Number(succ)) ?? { name: old.name, d: {}, i: {} };
+    for (const [k, list] of Object.entries(old.d)) cur.d[k] = [...list, ...(cur.d[k] ?? [])];
+    for (const [k, list] of Object.entries(old.i)) cur.i[k] = [...list, ...(cur.i[k] ?? [])];
+    store.set(Number(succ), cur);
+  }
   const today = ymd(now);
   const out: Fundamentals[] = [];
   for (const [cik, data] of store) {

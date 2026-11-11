@@ -40,9 +40,13 @@ export function useAnalysis(symbol: string, row: StockRow | null, fin: Financial
       } else effective[q.id] = '';
     }
     const card = scoreChecklist(effective);
-    // The same data-only score the front-page ranking uses (it ignores the reader's own answers).
+    // The same data-only score the front-page ranking uses: default thresholds and default valuation
+    // inputs, whatever the reader has changed on this page.
+    const plain = Object.keys(overrides).length || Object.keys(check.thresholds ?? {}).length
+      ? analyse({ fin, price: row?.price ?? null, marketCap: row?.marketCap ?? null, sector: row?.sector ?? '', industry: row?.industry ?? '' }).suggestions
+      : suggestions;
     const dataAnswers: Record<string, Answer> = {};
-    for (const id of DATA_QUESTION_IDS) dataAnswers[id] = suggestions[id]?.answer ?? '';
+    for (const id of DATA_QUESTION_IDS) dataAnswers[id] = plain[id]?.answer ?? '';
     const dataScore = autoScore(dataAnswers);
     const specialist = isSpecialistSector(row?.sector ?? '', row?.sic);
     const verdict = combinedAssessment(card, result.status, check.requiredScore ?? 0.85, !specialist);

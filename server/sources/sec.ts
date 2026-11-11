@@ -43,8 +43,35 @@ export interface CompanyFacts {
   facts: Record<string, Record<string, { label: string | null; description: string | null; units: Record<string, CompanyFact[]> }>>;
 }
 
-export async function companyFacts(cik: number, background = false): Promise<CompanyFacts | null> {
+/**
+ * A company that reorganizes under a new holding company keeps its ticker but becomes a new SEC
+ * registrant with no filing history of its own. The SEC does not publish the link between the two
+ * in machine-readable form, so known cases are listed here: successor CIK -> predecessor CIK.
+ */
+export const PREDECESSOR: Record<number, number> = {
+  2115436: 34088, // ExxonMobil Holdings Corp <- Exxon Mobil Corp
+};
+
+async function rawCompanyFacts(cik: number, background: boolean): Promise<CompanyFacts | null> {
   return fetchJson<CompanyFacts>(`${BASE}/api/xbrl/companyfacts/CIK${String(cik).padStart(10, '0')}.json`, { nullOn: [404], timeoutMs: 90_000, background });
+}
+
+/** A company's full XBRL history, joined with its predecessor registrant's where there is one. */
+export async function companyFacts(cik: number, background = false): Promise<CompanyFacts | null> {
+  const own = await rawCompanyFacts(cik, background);
+  const pred = PREDECESSOR[cik];
+  if (pred == null) return own;
+  const old = await rawCompanyFacts(pred, background).catch(() => null);
+  if (!old) return own;
+  if (!own) return { ...old, cik };
+  for (const [taxonomy, tags] of Object.entries(old.facts ?? {})) {
+    const into = (own.facts[taxonomy] ??= {});
+    for (const [tag, def] of Object.entries(tags)) {
+      const target = (into[tag] ??= { label: def.label, description: def.description, units: {} });
+      for (const [unit, list] of Object.entries(def.units ?? {})) target.units[unit] = [...list, ...(target.units[unit] ?? [])];
+    }
+  }
+  return own;
 }
 
 export interface Submission {

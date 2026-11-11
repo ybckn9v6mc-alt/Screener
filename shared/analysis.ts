@@ -86,7 +86,9 @@ export interface RatioSummary {
   positiveNiYears: number | null;
   revPositiveYears: number | null;
   avgFcf: number | null;
+  /** Fiscal years with statements at all, and how many of them have a free-cash-flow figure. */
   yearsEntered: number;
+  fcfYears: number;
   span: string;
 }
 
@@ -121,7 +123,9 @@ export function ratioSummary(w: Worksheet): RatioSummary {
     positiveNiYears: count('netIncome', (v) => v > 0),
     revPositiveYears: count('revenue', (v) => v > 0),
     avgFcf: avg(nums(r.fcf ?? [])),
-    yearsEntered: nums(r.revenue ?? []).length,
+    // Some companies tag revenue with a caption of their own; a year still counts when profit is reported.
+    yearsEntered: w.labels.filter((_, i) => isNum(r.revenue?.[i]) || isNum(r.netIncome?.[i])).length,
+    fcfYears: nums(r.fcf ?? []).length,
     span: n ? `${w.labels[0]}–${w.labels[n - 1]}` : '',
   };
 }
@@ -153,6 +157,30 @@ export interface ValuationDefaults {
 }
 
 const roundTo = (v: number, step: number) => Math.round(v / step) * step;
+
+/** Capital spending is missing for at least one of the last five fiscal years that has operating cash flow. */
+export function capexMissing(fin: Financials): boolean {
+  const cfo = (fin.annual.values.cfo ?? []).slice(-5);
+  const capex = (fin.annual.values.capex ?? []).slice(-5);
+  return cfo.some((v, i) => isNum(v) && !isNum(capex[i]));
+}
+
+/**
+ * A capital-spending figure that is implausibly small: under a third of depreciation at a
+ * company where property and equipment are over a third of assets. That pattern usually
+ * means the bulk of the spending (a fleet, rental equipment, wells) sits under a caption
+ * of the company's own that this app cannot read.
+ */
+export function capexLooksIncomplete(fin: Financials): boolean {
+  const a = fin.annual;
+  const n = a.periods.length;
+  const capex = nums((a.values.capex ?? []).slice(-5));
+  const da = nums((a.values.da ?? []).slice(-5));
+  const ppe = a.values.ppe?.[n - 1];
+  const assets = a.values.assets?.[n - 1];
+  if (capex.length < 3 || da.length < 3 || !isNum(ppe) || !isNum(assets) || assets <= 0) return false;
+  return ppe / assets >= 0.35 && (avg(capex) as number) < 0.3 * (avg(da) as number);
+}
 
 /**
  * marketShares is market value / price: the number of *listed* shares the price refers to.
@@ -186,22 +214,32 @@ export function valuationDefaults(fin: Financials, price: number | null, marketS
     { id: 'fcf1', label: 'Latest fiscal year free cash flow', value: perShare(fcfLatest), how: 'Cash from operations − capex for the latest fiscal year.' },
     { id: 'oe1', label: 'Latest fiscal year owner earnings', value: perShare(oeLatest), how: 'Net income + D&A − maintenance capex for the latest fiscal year.' },
     { id: 'fcf5', label: '5-year average free cash flow', value: perShare(meanOf('fcf', 5)), how: 'Average of the last five fiscal years, divided by today’s diluted shares.' },
-    { id: 'fcfttm', label: 'Trailing twelve months free cash flow', value: perShare(fin.ttm?.values.fcf ?? null), how: 'Last four reported quarters.' },
+    { id: 'fcfttm', label: 'Trailing twelve months free cash flow', value: perShare(fin.ttm?.values.fcf ?? null), how: 'Cash from operations − capex over the last four reported quarters.' },
+    { id: 'oettm', label: 'Trailing twelve months owner earnings', value: perShare(fin.ttm?.values.ownerEarnings ?? null), how: 'Net income + D&A − maintenance capex over the last four reported quarters.' },
     shareBasis === 'market'
       ? { id: 'eps', label: 'Net income per share (latest fiscal year)', value: perShare(a.values.netIncome?.[n - 1] ?? null), how: 'Net income divided by the same share count — shown for reference; it ignores capital spending.' }
       : { id: 'eps', label: 'Diluted EPS (latest fiscal year)', value: a.values.eps?.[n - 1] ?? null, how: 'Reported earnings per share — shown for reference; it ignores capital spending.' },
   ];
-  // Conservative default: the lowest positive figure among the 3-year averages and latest-year values.
-  const core = options.filter((o) => ['fcf3', 'oe3', 'fcf1', 'oe1'].includes(o.id) && isNum(o.value));
+  // Conservative default: the lowest positive figure among the 3-year averages and latest-year values,
+  // joined by the trailing twelve months once quarters have been reported since the fiscal year closed.
+  const lastEnd = a.periods[n - 1]?.end ?? null;
+  const ttmNewer = Boolean(fin.ttm && lastEnd && Date.parse(fin.ttm.period.end) - Date.parse(lastEnd) > 80 * 86_400_000);
+  const coreIds = ['fcf3', 'oe3', 'fcf1', 'oe1', ...(ttmNewer ? ['fcfttm', 'oettm'] : [])];
+  const core = options.filter((o) => coreIds.includes(o.id) && isNum(o.value));
   const positive = core.filter((o) => (o.value as number) > 0);
+  const latestKnown = core.some((o) => o.id === 'fcf1') && core.some((o) => o.id === 'oe1');
   let chosen = '';
   let oe: number | null = null;
   let why: string;
-  if (core.length && positive.length === core.length) {
+  if (capexMissing(fin) && !latestKnown) {
+    why = 'This company’s filings do not tag capital spending in a form this app can read, so free cash flow and owner earnings cannot be worked out automatically. Take capital expenditures from the cash-flow statement and enter your own figure.';
+  } else if (capexLooksIncomplete(fin)) {
+    why = 'Reported capital spending is under a third of depreciation at a company where property and equipment are over a third of assets. Part of the spending is probably reported under a caption this app cannot read, so no figure is filled in automatically.';
+  } else if (latestKnown && positive.length === core.length) {
     const pick = positive.reduce((m, o) => ((o.value as number) < (m.value as number) ? o : m));
     chosen = pick.id;
     oe = Math.round((pick.value as number) * 100) / 100;
-    why = `Started from the lowest of the four core estimates (${pick.label.toLowerCase()}), so the figure leans conservative. Replace it with your own cycle-normalized estimate.`;
+    why = `Started from the lowest of the ${core.length} estimates ${ttmNewer ? '(three-year averages, latest fiscal year and trailing twelve months)' : '(three-year averages and latest fiscal year)'}: ${pick.label.toLowerCase()}. The figure leans conservative; replace it with your own cycle-normalized estimate.`;
   } else if (positive.length) {
     why = 'Some recent years show negative free cash flow or owner earnings, so no figure is filled in automatically. Enter a normalized estimate only if you can justify one.';
   } else {
@@ -219,14 +257,22 @@ export function valuationDefaults(fin: Financials, price: number | null, marketS
   let g1 = 0.03;
   let growthWhy: string;
   if (defined.length) {
+    // Three readings of past growth; the most cautious one sets the pace. Earnings that rebound from a
+    // poor year grow far faster than the business does, and revenue is what bounds growth over time.
     const med = defined[Math.floor((defined.length - 1) / 2)];
-    g1 = Math.min(0.12, Math.max(0, roundTo(med * 0.75, 0.005)));
-    growthWhy = `Years 1–5 start at three-quarters of the lower-middle historical growth rate (${(med * 100).toFixed(1)}%), capped at 12% and floored at 0%. Years 6–10 fade halfway toward the 2% terminal rate.`;
+    const readings: { v: number; label: string }[] = [{ v: med, label: `the lower-middle of the ${k}-year revenue, EPS and free-cash-flow-per-share growth rates` }];
+    if (isNum(hist[0].value)) readings.push({ v: hist[0].value, label: `revenue growth over the same ${k} years` });
+    const latestRev = a.values.revenueGrowth?.[n - 1];
+    if (isNum(latestRev)) readings.push({ v: latestRev, label: 'revenue growth in the latest fiscal year' });
+    const low = readings.reduce((m, r) => (r.v < m.v ? r : m));
+    g1 = Math.min(0.1, Math.max(0, roundTo(low.v * 0.75, 0.005)));
+    growthWhy = `Years 1–5 use three-quarters of ${readings.length === 1 ? '' : `the most cautious of ${readings.length} readings of past growth: `}${low.label} (${(low.v * 100).toFixed(1)}%), capped at 10% and floored at 0%. Years 6–10 ${g1 < 0.02 ? 'stay at the same rate' : 'fade halfway toward the 2% terminal rate'}.`;
   } else {
     growthWhy = 'No clean five-year growth history is available, so years 1–5 default to 3%.';
   }
   const terminal = 0.02;
-  const g2 = Math.max(terminal, roundTo((g1 + terminal) / 2, 0.005));
+  // Growth never speeds up after year five: a company given less than the terminal rate keeps that rate.
+  const g2 = g1 < terminal ? g1 : Math.max(terminal, roundTo((g1 + terminal) / 2, 0.005));
   return {
     inputs: { price, ownerEarnings: oe, marginOfSafety: 0.25, discountRate: 0.1, growth1to5: g1, growth6to10: g2, terminalGrowth: terminal },
     options,
@@ -423,16 +469,21 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
 
     const tf = th('positiveFcfYears', 4);
     const years = nums(w.rows.fcf).length;
-    data('f2', isNum(s.positiveFcfYears) && years >= 3 ? (s.positiveFcfYears >= Math.min(tf, years) && (s.avgFcf ?? 0) > 0 ? 'Yes' : s.positiveFcfYears <= years / 2 ? 'No' : 'Uncertain') : 'Uncertain', isNum(s.positiveFcfYears) ? `Free cash flow was positive in ${s.positiveFcfYears} of ${years} years, averaging ${money(s.avgFcf)}.` : 'Free cash flow history is not available.', [
+    const noCapex = 'Capital spending is not tagged in this company’s filings in a form this app can read, so free cash flow cannot be computed. Check the cash-flow statement.';
+    const capexGap = c.fin ? capexMissing(c.fin) : false;
+    const capexThin = c.fin ? capexLooksIncomplete(c.fin) : false;
+    data('f2', isNum(s.positiveFcfYears) && years >= 3 ? (s.positiveFcfYears >= Math.min(tf, years) && (s.avgFcf ?? 0) > 0 ? 'Yes' : s.positiveFcfYears <= years / 2 ? 'No' : 'Uncertain') : 'Uncertain', isNum(s.positiveFcfYears) ? `Free cash flow was positive in ${s.positiveFcfYears} of ${years} years, averaging ${money(s.avgFcf)}.` : capexGap ? noCapex : 'Free cash flow history is not available.', [
       { label: 'FCF by year', value: w.rows.fcf.map((v) => money(v)).join(' · ') },
     ], 'Cash flow statement over a full cycle.');
 
-    const cumF = nums(w.rows.fcf).reduce((x, y) => x + y, 0);
-    const cumN = nums(w.rows.netIncome).reduce((x, y) => x + y, 0);
-    const cumC = nums(w.rows.cfo).reduce((x, y) => x + y, 0);
-    const conv = cumN > 0 ? cumF / cumN : null;
+    // Sums run over the same years on both sides: a year without a figure on one side is left out of both.
+    const both = (x: string, y: string) => w.rows[x].reduce<[number, number, number]>((t, v, i) => (isNum(v) && isNum(w.rows[y][i]) ? [t[0] + v, t[1] + (w.rows[y][i] as number), t[2] + 1] : t), [0, 0, 0]);
+    const [cumF, cumNf, fcfYrs] = both('fcf', 'netIncome');
+    const [cumC, cumN, cfoYrs] = both('cfo', 'netIncome');
+    const conv = fcfYrs > 0 && cumNf > 0 ? cumF / cumNf : null;
+    const cfoConv = cfoYrs > 0 && cumN > 0 ? cumC / cumN : null;
     const tc = th('fcfToNi', 0.8);
-    data('f3', isNum(conv) ? (conv >= tc || cumC / cumN >= 1.1 ? 'Yes' : conv < tc * 0.6 ? 'No' : 'Uncertain') : 'Uncertain', isNum(conv) ? `Over five years, free cash flow was ${xx(conv, 2)} of net income and operating cash flow ${xx(cumC / cumN, 2)}.` : 'Cumulative net income is not positive, so conversion is not meaningful.', [
+    data('f3', isNum(conv) ? (conv >= tc || (isNum(cfoConv) && cfoConv >= 1.1) ? 'Yes' : conv < tc * 0.6 ? 'No' : 'Uncertain') : 'Uncertain', isNum(conv) ? `Over ${fcfYrs} years, free cash flow was ${xx(conv, 2)} of net income and operating cash flow ${xx(cfoConv, 2)}.` : fcfYrs === 0 && capexGap ? noCapex : 'Cumulative net income is not positive, so conversion is not meaningful.', [
       { label: '5-yr FCF / net income', value: xx(conv, 2) },
       { label: 'Latest-year FCF / net income', value: xx(s.fcfToNi, 2) },
     ], 'Cash flow statement; working-capital movements.');
@@ -446,10 +497,11 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
       if (lev <= tl && (!isNum(cov) || cov >= ti)) f4 = 'Yes';
       else if (lev > tl * 1.6 || (isNum(cov) && cov < ti / 2)) f4 = 'No';
     }
-    data('f4', f4, isNum(lev) ? `Net debt is ${xx(lev)} EBITDA (screen ≤ ${xx(tl)}); EBIT covers cash interest ${isNum(cov) ? xx(cov) : 'n/a'} (screen ≥ ${xx(ti, 0)}).` : 'Leverage could not be computed (EBITDA is missing or negative).', [
+    data('f4', f4, isNum(lev) ? `Net debt is ${xx(lev)} EBITDA (screen ≤ ${xx(tl)}); EBIT covers cash interest ${isNum(cov) ? xx(cov) : 'n/a'} (screen ≥ ${xx(ti, 0)}).` : !isNum(w.rows.totalDebt.at(-1)) ? 'The company pays interest, but its borrowings are reported under captions this app cannot read, so leverage is not computed. Check the debt note.' : 'Leverage could not be computed (EBITDA is missing or negative).', [
       { label: 'Total debt / cash', value: `${money(w.rows.totalDebt.at(-1))} / ${money(w.rows.cash.at(-1))}` },
       { label: 'Net debt / EBITDA', value: xx(lev) },
       { label: 'EBIT / cash interest', value: xx(cov) },
+      ...(isNum(a?.values.operatingLeases?.[n - 1]) && (a?.values.operatingLeases?.[n - 1] as number) > 0 ? [{ label: 'Operating lease liabilities (not counted as debt)', value: money(a?.values.operatingLeases?.[n - 1]) }] : []),
     ], 'Debt note and maturity schedule in the 10-K; covenant disclosures.');
 
     const om = series('operMargin', 5);
@@ -465,9 +517,9 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
       { label: 'Profitable years', value: `${s.positiveNiYears ?? 'n/a'} of ${niYears.length}` },
     ], 'Segment results through the last downturn.');
 
-    const capex = nums(w.rows.capex).reduce((x, y) => x + y, 0);
-    const intensity = cumC > 0 ? capex / cumC : null;
-    data('f6', isNum(intensity) ? (intensity <= 0.5 ? 'Yes' : intensity > 0.75 ? 'No' : 'Uncertain') : 'Uncertain', isNum(intensity) ? `Capital spending absorbed ${pc(intensity, 0)} of operating cash flow over five years.` : 'Operating cash flow is not positive, so capital intensity is not meaningful.', [
+    const [capex, capexCfo, capexYrs] = both('capex', 'cfo');
+    const intensity = !capexGap && !capexThin && capexYrs > 0 && capexCfo > 0 ? capex / capexCfo : null;
+    data('f6', isNum(intensity) ? (intensity <= 0.5 ? 'Yes' : intensity > 0.75 ? 'No' : 'Uncertain') : 'Uncertain', isNum(intensity) ? `Capital spending absorbed ${pc(intensity, 0)} of operating cash flow over ${capexYrs} years.` : capexGap ? noCapex : capexThin ? 'Reported capital spending is under a third of depreciation although property and equipment are over a third of assets, so part of the spending is probably reported under a caption this app cannot read.' : 'Operating cash flow is not positive, so capital intensity is not meaningful.', [
       { label: '5-yr capex / operating cash flow', value: pc(intensity, 0) },
       { label: 'Capex vs D&A (latest)', value: `${money(w.rows.capex.at(-1))} vs ${money(a?.values.da?.[n - 1])}` },
     ], 'Capex breakdown (maintenance vs growth) in MD&A; PP&E note.');

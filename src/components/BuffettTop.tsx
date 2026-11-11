@@ -63,7 +63,7 @@ interface Payload {
   asOf: number;
   minCap: number;
   progress: { done: number; total: number };
-  counts: { aboveFloor: number; financialOrRealEstate: number; noStatements: number; analysed: number; shortHistory: number; staleStatements: number; gateFailed: number; noValuation: number; ranked: number };
+  counts: { aboveFloor: number; financialOrRealEstate: number; noStatements: number; analysed: number; shortHistory: number; staleStatements: number; gateFailed: number; capexUnknown: number; noValuation: number; duplicateListings: number; ranked: number };
   maxPoints: number;
   questionCount: number;
   rows: Entry[];
@@ -116,8 +116,8 @@ function Detail({ e }: { e: Entry }) {
     <div className="top10-detail">
       <div className="top10-facts">
         <div><span className="k">How the value was estimated</span>Owner earnings {usd(e.ownerEarnings)} a share ({e.ownerEarningsBasis.toLowerCase() || 'automatic estimate'}), growing {fmtPct(e.growth1to5, 1)} for five years then {fmtPct(e.growth6to10, 1)}, discounted at {fmtPct(e.discountRate, 0)}. Buy-below is value less a {fmtPct(e.marginOfSafety, 0)} margin of safety.</div>
-        <div><span className="k">More from the worksheet</span>Return on equity {fmtPct(e.metrics.avgRoe, 0)} (5-yr avg) · free cash flow positive in {e.metrics.positiveFcfYears ?? '–'} of 5 years · EBIT covers interest {isNum(e.metrics.ebitToInterest) ? (e.metrics.ebitToInterest >= 100 ? '100x+' : times(e.metrics.ebitToInterest)) : '–'} · revenue growth {fmtPct(e.metrics.revCagr, 1)} a year · {e.metrics.quantPass} of 8 quant screens passed.</div>
-        <div><span className="k">Statements</span>{e.fyLabel ?? 'Latest fiscal year'} (to {fmtDate(e.fyEnd)}), from SEC filings.{e.splitAdjusted ? ' Earlier years restated for a stock split.' : ''}{e.shareBasisNote ? ` ${e.shareBasisNote}` : ''}</div>
+        <div><span className="k">More from the worksheet</span>Return on equity {fmtPct(e.metrics.avgRoe, 0)} (5-yr avg) · free cash flow positive in {e.metrics.positiveFcfYears ?? '–'} of 5 years · {isNum(e.metrics.ebitToInterest) ? `EBIT covers interest ${e.metrics.ebitToInterest >= 100 ? '100x+' : times(e.metrics.ebitToInterest)}` : 'no interest figure reported'} · revenue growth {fmtPct(e.metrics.revCagr, 1)} a year · {e.metrics.quantPass} of 8 quant screens passed.</div>
+        <div><span className="k">Statements</span>{e.fyLabel ?? 'Latest fiscal year'} (to {fmtDate(e.fyEnd)}), from SEC filings.{e.splitAdjusted ? ' Share counts in the scored years are restated for a stock split.' : ''}{e.shareBasisNote ? ` ${e.shareBasisNote}` : ''}</div>
       </div>
       {pillars.map((p) => (
         <div key={p} style={{ marginTop: 10 }}>
@@ -153,7 +153,7 @@ export default function BuffettTop() {
   if (!data) return <Card title="Top 10 on the Buffett checklist"><Loading text="Scoring companies…" /></Card>;
   const { progress, counts } = data;
   const building = progress.total > 0 && progress.done < progress.total * 0.97;
-  const screenerLink = `/screener?view=buffett&cap=r:${data.minCap / 1e9}:&buffettGates=pass&sort=buffettPoints&dir=desc`;
+  const screenerLink = '/screener?view=buffett&buffettRank=ranked&sort=buffettRank&dir=asc';
   const mos = (e: Entry) => (isNum(e.valueDiscount) ? (e.valueDiscount >= 0 ? `${fmtPct(e.valueDiscount, 0)} below` : `${fmtPct(-e.valueDiscount, 0)} above`) : '–');
   const toggle = (s: string) => setOpen(open === s ? null : s);
 
@@ -189,7 +189,7 @@ export default function BuffettTop() {
                   <th title="Normalized owner earnings per share ÷ price">Owner-earnings<br />yield</th>
                   <th title="Net debt ÷ EBITDA, latest fiscal year (0 = net cash)">Net debt /<br />EBITDA</th>
                   <th title="Free cash flow ÷ net income, latest fiscal year">FCF /<br />net income</th>
-                  <th title="Change in diluted share count over five years; negative means buybacks">Share count<br />5-yr</th>
+                  <th title="Change in diluted share count from the first to the last of the five fiscal years scored; negative means buybacks">Share count<br />5-yr</th>
                   <th title="Price ÷ trailing twelve-month earnings">P/E</th>
                   <th aria-label="Details" />
                 </tr>
@@ -266,7 +266,7 @@ export default function BuffettTop() {
               <span><i style={{ display: 'inline-block', width: 4, height: 12, borderRadius: 2, background: 'var(--text)' }} />Today’s price</span>
             </div>
             <p className="note">
-              Of {counts.aboveFloor.toLocaleString()} listings above ${data.minCap / 1e9} billion: {counts.financialOrRealEstate.toLocaleString()} are financial or real-estate companies (not scored), {counts.noStatements.toLocaleString()} have no US-GAAP statements to score, {counts.gateFailed.toLocaleString()} fail a required gate, {counts.noValuation.toLocaleString()} cannot be valued because owner earnings are not positive, and {(counts.shortHistory + counts.staleStatements).toLocaleString()} have too little or out-of-date history. {counts.ranked.toLocaleString()} companies are ranked. Market value {data.rows.length ? `of these ten ranges from ${fmtCompact(Math.min(...data.rows.map((r) => r.marketCap ?? Infinity)), '$')} to ${fmtCompact(Math.max(...data.rows.map((r) => r.marketCap ?? 0)), '$')}` : ''}.
+              Of {counts.aboveFloor.toLocaleString()} listings above ${data.minCap / 1e9} billion: {counts.financialOrRealEstate.toLocaleString()} are financial or real-estate companies (not scored), {counts.noStatements.toLocaleString()} have no US-GAAP statements to score, {counts.gateFailed.toLocaleString()} fail a required gate, {counts.noValuation.toLocaleString()} cannot be valued because owner earnings are not positive, {counts.capexUnknown.toLocaleString()} do not report capital spending in a form this app can read (so free cash flow is unknown), {(counts.shortHistory + counts.staleStatements).toLocaleString()} have too little or out-of-date history{counts.duplicateListings ? `, and ${counts.duplicateListings.toLocaleString()} are second share classes of a ranked company` : ''}. That leaves {counts.ranked.toLocaleString()} ranked companies. Market value {data.rows.length ? `of these ten ranges from ${fmtCompact(Math.min(...data.rows.map((r) => r.marketCap ?? Infinity)), '$')} to ${fmtCompact(Math.max(...data.rows.map((r) => r.marketCap ?? 0)), '$')}` : ''}.
             </p>
             <details className="method" style={{ marginTop: 8 }}>
               <summary>How this ranking works, and what it leaves out</summary>

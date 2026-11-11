@@ -89,6 +89,7 @@ export interface StockRow {
   buffettScore?: number | null; // points earned / points the data can answer (0..1)
   buffettPoints?: number | null;
   buffettGates?: 'pass' | 'fail' | null; // whether any data-answered required gate is a No
+  buffettRank?: number | null; // place in the front-page ranking; null when a rule excludes the company
   intrinsicValue?: number | null; // per share, from the automatic owner-earnings model
   buyBelow?: number | null; // intrinsic value less the 25% margin of safety
   valueDiscount?: number | null; // 1 - price / intrinsic value (positive = below value)

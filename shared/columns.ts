@@ -97,6 +97,7 @@ export const COLUMNS: ColumnDef[] = [
   c('earningsDate', 'Earnings', 'date'),
   c('ipoYear', 'IPO Year', 'int'),
   c('optionable', 'Optionable', 'bool'),
+  c('buffettRank', 'Checklist rank', 'int', { title: 'Place in the front-page Buffett checklist ranking (blank when a rule excludes the company)' }),
   c('buffettPoints', 'Checklist pts', 'int', { title: 'Buffett checklist points from the 14 questions financial data can answer (maximum 34)' }),
   c('buffettScore', 'Checklist %', 'pct', { title: 'Share of the data-answerable Buffett checklist points earned' }),
   c('intrinsicValue', 'Intrinsic value', 'price', { title: 'Per share, from the automatic 10-year owner-earnings model' }),
@@ -112,7 +113,7 @@ export const VIEWS: Record<string, { label: string; columns: string[] }> = {
   financial: { label: 'Financial', columns: ['symbol', 'marketCap', 'dividendYield', 'roa', 'roe', 'roic', 'currentRatio', 'quickRatio', 'ltDebtEq', 'debtEq', 'grossMargin', 'operMargin', 'netMargin', 'earningsDate', 'price', 'change', 'volume'] },
   ownership: { label: 'Ownership', columns: ['symbol', 'marketCap', 'sharesOut', 'float', 'insiderOwn', 'insiderTrans', 'instOwn', 'instTrans', 'shortFloat', 'shortRatio', 'avgVolume', 'price', 'change', 'volume'] },
   performance: { label: 'Performance', columns: ['symbol', 'perfWeek', 'perfMonth', 'perfQuarter', 'perfHalf', 'perfYear', 'perfYtd', 'volatilityWeek', 'volatilityMonth', 'recom', 'avgVolume', 'relVolume', 'price', 'change', 'volume'] },
-  buffett: { label: 'Buffett', columns: ['symbol', 'name', 'sector', 'marketCap', 'buffettPoints', 'buffettScore', 'price', 'intrinsicValue', 'buyBelow', 'valueDiscount', 'roic', 'debtEq', 'pe', 'pfcf', 'change'] },
+  buffett: { label: 'Buffett', columns: ['symbol', 'name', 'sector', 'marketCap', 'buffettRank', 'buffettPoints', 'buffettScore', 'price', 'intrinsicValue', 'buyBelow', 'valueDiscount', 'roic', 'debtEq', 'pe', 'pfcf', 'change'] },
   technical: { label: 'Technical', columns: ['symbol', 'beta', 'atr', 'sma20', 'sma50', 'sma200', 'high52w', 'low52w', 'rsi', 'pattern', 'candle', 'price', 'change', 'changeFromOpen', 'gap', 'volume'] },
 };
 

@@ -19,7 +19,7 @@ interface Raw {
 }
 
 const FLOW: Record<string, { tags: string[]; unit?: string }> = {
-  revenue: { tags: ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'SalesRevenueNet', 'SalesRevenueGoodsNet', 'RevenuesNetOfInterestExpense'] },
+  revenue: { tags: ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'SalesRevenueNet', 'SalesRevenueGoodsNet', 'RevenuesNetOfInterestExpense', 'RegulatedAndUnregulatedOperatingRevenue'] },
   costOfRevenue: { tags: ['CostOfRevenue', 'CostOfGoodsAndServicesSold', 'CostOfGoodsSold', 'CostOfServices'] },
   grossProfit: { tags: ['GrossProfit'] },
   rnd: { tags: ['ResearchAndDevelopmentExpense', 'ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost'] },
@@ -33,7 +33,6 @@ const FLOW: Record<string, { tags: string[]; unit?: string }> = {
   dps: { tags: ['CommonStockDividendsPerShareDeclared', 'CommonStockDividendsPerShareCashPaid'], unit: 'USD/shares' },
   sharesDiluted: { tags: ['WeightedAverageNumberOfDilutedSharesOutstanding', 'WeightedAverageNumberOfSharesOutstandingBasicAndDiluted', 'WeightedAverageNumberOfSharesOutstandingBasic'], unit: 'shares' },
   cfo: { tags: ['NetCashProvidedByUsedInOperatingActivities', 'NetCashProvidedByUsedInOperatingActivitiesContinuingOperations'] },
-  capex: { tags: ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets', 'PaymentsForCapitalImprovements'] },
   da: { tags: ['DepreciationDepletionAndAmortization', 'DepreciationAndAmortization', 'DepreciationAmortizationAndAccretionNet', 'Depreciation'] },
   sbc: { tags: ['ShareBasedCompensation', 'AllocatedShareBasedCompensationExpense'] },
   dividendsPaid: { tags: ['PaymentsOfDividendsCommonStock', 'PaymentsOfDividends'] },
@@ -41,6 +40,42 @@ const FLOW: Record<string, { tags: string[]; unit?: string }> = {
   acquisitions: { tags: ['PaymentsToAcquireBusinessesNetOfCashAcquired', 'PaymentsToAcquireBusinessesGross'] },
   interestPaid: { tags: ['InterestPaidNet', 'InterestPaid'] },
 };
+
+/**
+ * Capital spending. Many companies do not use the general "purchases of property,
+ * plant and equipment" line: oil producers report additions to oil and gas
+ * properties, equipment lessors report purchases of rental equipment, and so on.
+ * Each list below is one cash-flow line (alternative tags for the same thing) and
+ * the lines are added together. Where a company gives the all-in "productive
+ * assets" total instead, the larger of the two readings is used.
+ *
+ * When none of these is present, capital spending is unknown. It is never assumed
+ * to be zero: that would turn operating cash flow into free cash flow.
+ */
+const CAPEX_TOTAL = ['PaymentsToAcquireProductiveAssets'];
+const CAPEX_LINES: string[][] = [
+  ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsForCapitalImprovements'],
+  ['PaymentsToAcquireOilAndGasPropertyAndEquipment', 'PaymentsToExploreAndDevelopOilAndGasProperties'],
+  ['PaymentsToAcquireOtherPropertyPlantAndEquipment'],
+  ['PaymentsToAcquireEquipmentOnLease'],
+  ['PaymentsToAcquireMachineryAndEquipment'],
+  ['PaymentsToAcquireBuildings'],
+  ['PaymentsForConstructionInProcess'],
+  ['PaymentsToAcquireMiningAssets'],
+  ['PaymentsToDevelopSoftware', 'PaymentsForSoftware', 'PaymentsToAcquireSoftware'],
+];
+FLOW.capexTotal = { tags: CAPEX_TOTAL };
+CAPEX_LINES.forEach((tags, i) => {
+  FLOW[`capexLine${i}`] = { tags };
+});
+const CAPEX_LINE_KEYS = CAPEX_LINES.map((_, i) => `capexLine${i}`);
+
+function combineCapex(v: Record<string, number | null>): void {
+  const lines = CAPEX_LINE_KEYS.map((k) => v[k]).filter(isNum).map(Math.abs);
+  const sum = lines.length ? lines.reduce((a, b) => a + b, 0) : null;
+  const total = isNum(v.capexTotal) ? Math.abs(v.capexTotal) : null;
+  v.capex = sum == null && total == null ? null : Math.max(sum ?? 0, total ?? 0);
+}
 
 const INSTANT: Record<string, { tags: string[]; unit?: string }> = {
   cashOnly: { tags: ['CashAndCashEquivalentsAtCarryingValue', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents', 'Cash'] },
@@ -55,11 +90,97 @@ const INSTANT: Record<string, { tags: string[]; unit?: string }> = {
   currentLiabilities: { tags: ['LiabilitiesCurrent'] },
   liabilities: { tags: ['Liabilities'] },
   equity: { tags: ['StockholdersEquity', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'] },
-  ltDebtNoncurrent: { tags: ['LongTermDebtNoncurrent', 'LongTermDebtAndCapitalLeaseObligations', 'LongTermNotesPayable', 'ConvertibleNotesPayableNoncurrent'] },
-  ltDebtTotal: { tags: ['LongTermDebt', 'DebtLongtermAndShorttermCombinedAmount'] },
-  ltDebtCurrent: { tags: ['LongTermDebtCurrent', 'LongTermDebtAndCapitalLeaseObligationsCurrent'] },
-  stDebt: { tags: ['DebtCurrent', 'ShortTermBorrowings', 'CommercialPaper'] },
+  leaseTotal: { tags: ['OperatingLeaseLiability'] },
+  leaseCurrent: { tags: ['OperatingLeaseLiabilityCurrent'] },
+  leaseNoncurrent: { tags: ['OperatingLeaseLiabilityNoncurrent'] },
 };
+
+/**
+ * Borrowings. Companies describe debt with dozens of different captions, and the
+ * same borrowing often appears under two of them (a balance-sheet line and a
+ * note). Each caption is read on its own, three independent readings of the total
+ * are built, and the largest is used; captions are never simply added up, which
+ * would count the same borrowing twice.
+ */
+const DEBT_TAGS = [
+  'LongTermDebtNoncurrent', 'LongTermDebtAndCapitalLeaseObligations', 'LongTermNotesPayable', 'SeniorLongTermNotes', 'NotesPayableNoncurrent',
+  'ConvertibleNotesPayableNoncurrent', 'ConvertibleDebtNoncurrent', 'ConvertibleLongTermNotesPayable', 'LongTermLineOfCredit', 'LongTermLoansFromBank',
+  'LongTermLoansPayable', 'SecuredLongTermDebt', 'UnsecuredLongTermDebt', 'OtherLongTermDebtNoncurrent',
+  'DebtCurrent', 'LongTermDebtCurrent', 'LongTermDebtAndCapitalLeaseObligationsCurrent', 'SeniorNotesCurrent', 'NotesPayableCurrent',
+  'ConvertibleNotesPayableCurrent', 'LinesOfCreditCurrent', 'ShortTermBorrowings', 'CommercialPaper', 'ShortTermBankLoansAndNotesPayable',
+  'DebtLongtermAndShorttermCombinedAmount', 'DebtAndCapitalLeaseObligations', 'LongTermDebt', 'LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities',
+  'SeniorNotes', 'ConvertibleNotesPayable', 'ConvertibleDebt', 'NotesPayable', 'LineOfCredit', 'SecuredDebt', 'UnsecuredDebt', 'OtherLongTermDebt',
+  'LoansPayable', 'NotesAndLoansPayable', 'DebtInstrumentCarryingAmount',
+];
+for (const t of DEBT_TAGS) INSTANT[`debt:${t}`] = { tags: [t] };
+
+/** Total borrowings from whichever captions the company uses, or null when it uses none of them. */
+function combineDebt(v: Record<string, number | null>): number | null {
+  const d = (tag: string) => {
+    const x = v[`debt:${tag}`];
+    return isNum(x) && x >= 0 ? x : null;
+  };
+  const first = (...tags: string[]) => {
+    for (const t of tags) {
+      const x = d(t);
+      if (x != null) return x;
+    }
+    return null;
+  };
+  // Adds different kinds of borrowing; two captions carrying exactly the same amount are one borrowing tagged twice.
+  const sumDistinct = (...parts: (number | null)[]) => {
+    const seen = new Set<number>();
+    let total = 0;
+    let any = false;
+    for (const x of parts) {
+      if (x == null) continue;
+      any = true;
+      if (x > 0 && seen.has(x)) continue;
+      seen.add(x);
+      total += x;
+    }
+    return any ? total : null;
+  };
+  const larger = (a: number | null, b: number | null) => (a == null ? b : b == null ? a : Math.max(a, b));
+  const shortTerm = first('ShortTermBorrowings', 'CommercialPaper', 'ShortTermBankLoansAndNotesPayable');
+
+  // 1. Balance-sheet captions: non-current plus current.
+  const nonCurrent = larger(
+    first('LongTermDebtNoncurrent', 'LongTermDebtAndCapitalLeaseObligations'),
+    sumDistinct(
+      first('LongTermNotesPayable', 'SeniorLongTermNotes', 'NotesPayableNoncurrent'),
+      first('ConvertibleNotesPayableNoncurrent', 'ConvertibleDebtNoncurrent', 'ConvertibleLongTermNotesPayable'),
+      d('LongTermLineOfCredit'),
+      first('LongTermLoansFromBank', 'LongTermLoansPayable'),
+      d('SecuredLongTermDebt'),
+      d('UnsecuredLongTermDebt'),
+      d('OtherLongTermDebtNoncurrent'),
+    ),
+  );
+  const currentPortion = first('LongTermDebtCurrent', 'LongTermDebtAndCapitalLeaseObligationsCurrent') ?? sumDistinct(first('SeniorNotesCurrent', 'NotesPayableCurrent'), d('ConvertibleNotesPayableCurrent'), d('LinesOfCreditCurrent'));
+  // "Debt, current" is already the total of short-term borrowings and the current portion of long-term debt.
+  const current = d('DebtCurrent') ?? sumDistinct(currentPortion, shortTerm);
+  const fromCaptions = nonCurrent != null || current != null ? (nonCurrent ?? 0) + (current ?? 0) : null;
+
+  // 2. A stated total.
+  const combined = first('DebtLongtermAndShorttermCombinedAmount', 'DebtAndCapitalLeaseObligations');
+  const longTermTotal = first('LongTermDebt', 'LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities');
+  const fromTotal = larger(combined, longTermTotal != null ? longTermTotal + (shortTerm ?? 0) : null);
+
+  // 3. The instruments themselves (senior notes, convertibles, bank lines).
+  const fromInstruments = sumDistinct(
+    d('SeniorNotes'),
+    first('ConvertibleNotesPayable', 'ConvertibleDebt'),
+    d('NotesPayable'),
+    d('LineOfCredit'),
+    d('SecuredDebt'),
+    d('UnsecuredDebt'),
+    d('OtherLongTermDebt'),
+    first('LoansPayable', 'NotesAndLoansPayable'),
+  );
+
+  return larger(larger(fromCaptions, fromTotal), fromInstruments) ?? d('DebtInstrumentCarryingAmount');
+}
 
 interface Basis {
   /** Multiply a share count from a filing made on this date to put it on today's basis. */
@@ -105,7 +226,7 @@ function shareBasis(cf: sec.CompanyFacts): Basis {
   const restated = (tag: string, unit: string, onPair: (from: string, to: string, older: number, newer: number) => void) => {
     const byPeriod = new Map<string, { filed: string; v: number }[]>();
     for (const f of gaap[tag]?.units?.[unit] ?? []) {
-      if (!f.start || !isNum(f.val) || f.val === 0 || !f.filed) continue;
+      if (!f.start || !isNum(f.val) || f.val === 0 || !f.filed || PROXY_FORM.test(f.form ?? '')) continue;
       dates.add(f.filed);
       const key = `${f.start}|${f.end}`;
       const list = byPeriod.get(key);
@@ -179,12 +300,19 @@ function shareBasis(cf: sec.CompanyFacts): Basis {
   return { shares: lookup(sFactor), perShare: lookup(pFactor) };
 }
 
+/**
+ * Proxy statements repeat a few headline figures (net income in the pay-versus-performance
+ * table), sometimes in thousands where the annual report uses dollars. Only periodic
+ * reports and registration statements are read.
+ */
+const PROXY_FORM = /14A|14C/i;
+
 function collect(cf: sec.CompanyFacts, tags: string[], unit = 'USD', basis?: Basis): Raw[] {
   const out: Raw[] = [];
   const gaap = cf.facts['us-gaap'] ?? {};
   tags.forEach((tag, p) => {
     for (const f of gaap[tag]?.units?.[unit] ?? []) {
-      if (!isNum(f.val)) continue;
+      if (!isNum(f.val) || PROXY_FORM.test(f.form ?? '')) continue;
       let v = f.val;
       if (basis && unit === 'shares') v *= basis.shares(f.filed);
       else if (basis && unit === 'USD/shares') v /= basis.perShare(f.filed);
@@ -197,6 +325,8 @@ function collect(cf: sec.CompanyFacts, tags: string[], unit = 'USD', basis?: Bas
 const near = (a: string, b: string, tol = 5) => Math.abs(daysBetween(a, b)) <= tol;
 const addDays = (d: string, n: number) => ymd(new Date(Date.parse(d) + n * 86_400_000));
 const len = (f: Raw) => (f.s ? daysBetween(f.s, f.e) + 1 : 0);
+/** A 52/53-week year that ends in the first days of January belongs to the calendar year before. */
+const fiscalYearOf = (end: string) => Number(addDays(end, -7).slice(0, 4));
 
 /** Best fact for an exact period: preferred tag first, then the most recently filed value (restatements win). */
 function pickFlow(facts: Raw[], start: string, end: string): number | null {
@@ -247,7 +377,7 @@ function quarterPeriods(cf: sec.CompanyFacts, years: FY[]): { start: string; end
   if (!years.length) return [];
   const base = [...collect(cf, FLOW.netIncome.tags), ...collect(cf, FLOW.revenue.tags)];
   const last = years[years.length - 1];
-  const open: FY = { start: addDays(last.end, 1), end: addDays(last.end, 366), complete: false, year: Number(last.end.slice(0, 4)) + 1 };
+  const open: FY = { start: addDays(last.end, 1), end: addDays(last.end, 366), complete: false, year: fiscalYearOf(last.end) + 1 };
   const out: { start: string; end: string; fy: FY; q: number }[] = [];
   for (const fy of [...years, open]) {
     const ends = new Set<string>();
@@ -284,21 +414,46 @@ function quarterFlow(facts: Raw[], q: { start: string; end: string; fy: FY; q: n
   return null;
 }
 
-function derive(v: Record<string, number | null>, prev: Record<string, number | null> | null, annualized: boolean): void {
+interface DebtContext {
+  /** Use this figure as it stands (the trailing-twelve-month column takes the latest quarter's). */
+  fixed?: { totalDebt: number | null };
+  /** For a quarter: the latest fiscal year-end row before it. */
+  anchor?: Record<string, number | null> | null;
+}
+
+function derive(v: Record<string, number | null>, prev: Record<string, number | null> | null, annualized: boolean, ctx: DebtContext = {}): void {
   const n = (k: string) => (isNum(v[k]) ? (v[k] as number) : null);
-  if (n('capex') != null) v.capex = Math.abs(v.capex as number);
+  const scale = annualized ? 1 : 4;
   if (n('grossProfit') == null && n('revenue') != null && n('costOfRevenue') != null) v.grossProfit = (v.revenue as number) - (v.costOfRevenue as number);
-  v.fcf = n('cfo') != null ? (v.cfo as number) - (n('capex') ?? 0) : null;
+  if (n('pretaxIncome') == null && n('netIncome') != null && n('incomeTax') != null) v.pretaxIncome = (v.netIncome as number) + (v.incomeTax as number);
+  // Free cash flow needs a capital-spending figure; without one it is unknown, not equal to operating cash flow.
+  v.fcf = n('cfo') != null && n('capex') != null ? (v.cfo as number) - (v.capex as number) : null;
   v.ebitda = n('operatingIncome') != null && n('da') != null ? (v.operatingIncome as number) + (v.da as number) : null;
   v.cash = n('cashOnly') != null ? (v.cashOnly as number) + (n('stInvest') ?? 0) : null;
   v.goodwill = n('goodwillOnly') != null || n('intangibles') != null ? (n('goodwillOnly') ?? 0) + (n('intangibles') ?? 0) : null;
-  const ltNon = n('ltDebtNoncurrent');
-  const ltTotal = n('ltDebtTotal');
-  const ltCur = n('ltDebtCurrent');
-  const st = n('stDebt');
-  const known = ltNon != null || ltTotal != null || ltCur != null || st != null;
-  v.totalDebt = known ? (ltNon != null ? ltNon + (ltCur ?? 0) : ltTotal ?? ltCur ?? 0) + (st ?? 0) : n('assets') != null ? 0 : null;
-  v.debtReported = known ? 1 : 0;
+  const debt = combineDebt(v);
+  const interest = n('interestPaid') ?? n('interestExpense');
+  if (ctx.fixed) v.totalDebt = ctx.fixed.totalDebt;
+  else if (debt != null) v.totalDebt = debt;
+  else {
+    // No debt caption in this period. That means "no debt" only when nothing says otherwise:
+    //  - a company paying meaningful interest has borrowings the standard captions do not capture;
+    //  - a company whose last full-year balance sheet showed material debt (or debt that could not
+    //    be read) has not repaid it as far as the data can tell, unless a full year's interest
+    //    figure says so. Quarterly reports are often tagged in less detail than annual ones.
+    // In those cases the figure is unknown, not zero.
+    const assets = n('assets') ?? 0;
+    const anchor = annualized ? prev : ctx.anchor ?? null;
+    const anchorUnknown = anchor != null && isNum(anchor.assets) && !isNum(anchor.totalDebt);
+    const anchorDebt = anchor != null && isNum(anchor.totalDebt) && anchor.totalDebt > Math.max(3e6, 0.01 * assets);
+    // A single quarter's interest is noisy (fees, tax interest), so the bar is higher there.
+    const paysInterest = interest != null && Math.abs(interest) * scale > Math.max(3e6, (annualized ? 0.0015 : 0.003) * assets);
+    const unknown = paysInterest || ((anchorUnknown || anchorDebt) && (interest == null || !annualized));
+    v.totalDebt = n('assets') != null && !unknown ? 0 : null;
+  }
+  v.debtReported = debt != null ? 1 : 0;
+  const leaseParts = n('leaseCurrent') != null || n('leaseNoncurrent') != null ? (n('leaseCurrent') ?? 0) + (n('leaseNoncurrent') ?? 0) : null;
+  v.operatingLeases = n('leaseTotal') ?? leaseParts;
   v.netDebt = n('totalDebt') != null && n('cash') != null ? (v.totalDebt as number) - (v.cash as number) : null;
   if (n('liabilities') == null && n('assets') != null && n('equity') != null) v.liabilities = (v.assets as number) - (v.equity as number);
   // Maintenance capex is unknowable from filings; the lesser of capex and D&A is a common conservative stand-in.
@@ -315,20 +470,20 @@ function derive(v: Record<string, number | null>, prev: Record<string, number | 
   v.fcfMargin = rev && rev > 0 ? div(v.fcf, rev) : null;
   v.revenueGrowth = prev ? growth(prev.revenue, v.revenue) : null;
   v.epsGrowth = prev ? growth(prev.eps, v.eps) : null;
-  const scale = annualized ? 1 : 4;
   const avg = (k: string) => (n(k) != null ? (prev && isNum(prev[k]) ? ((v[k] as number) + (prev[k] as number)) / 2 : (v[k] as number)) : null);
   const eqAvg = avg('equity');
   v.roe = eqAvg != null && eqAvg > 0 && n('netIncome') != null ? ((v.netIncome as number) * scale) / eqAvg : null;
   v.roa = avg('assets') ? div((n('netIncome') ?? NaN) * scale, avg('assets')) : null;
   let taxRate = 0.21;
-  if (n('incomeTax') != null && n('pretaxIncome') != null && (v.pretaxIncome as number) > 0) taxRate = Math.min(0.35, Math.max(0, (v.incomeTax as number) / (v.pretaxIncome as number)));
+  // Clamped to 15-35%: a year with a one-off tax benefit should not flatter the return on capital.
+  if (n('incomeTax') != null && n('pretaxIncome') != null && (v.pretaxIncome as number) > 0) taxRate = Math.min(0.35, Math.max(0.15, (v.incomeTax as number) / (v.pretaxIncome as number)));
   const capital = n('equity') != null && n('totalDebt') != null ? (v.equity as number) + (v.totalDebt as number) : null;
   const prevCapital = prev && isNum(prev.equity) && isNum(prev.totalDebt) ? (prev.equity as number) + (prev.totalDebt as number) : null;
   const capAvg = capital != null ? (prevCapital != null ? (capital + prevCapital) / 2 : capital) : null;
-  v.roic = capAvg != null && capAvg > 0 && n('operatingIncome') != null ? ((v.operatingIncome as number) * (1 - taxRate) * scale) / capAvg : null;
+  // Capped at 100%: once buybacks have shrunk equity to almost nothing the ratio stops meaning anything.
+  v.roic = capAvg != null && capAvg > 0 && n('operatingIncome') != null ? Math.min(1, ((v.operatingIncome as number) * (1 - taxRate) * scale) / capAvg) : null;
   v.debtEq = n('equity') != null && (v.equity as number) > 0 ? div(v.totalDebt, v.equity) : null;
   v.netDebtEbitda = n('ebitda') != null && (v.ebitda as number) > 0 && n('netDebt') != null ? Math.max(0, v.netDebt as number) / ((v.ebitda as number) * scale) : null;
-  const interest = n('interestPaid') ?? n('interestExpense');
   v.interestCoverage = n('operatingIncome') != null && interest != null ? (interest === 0 ? ((v.operatingIncome as number) > 0 ? 100 : null) : Math.min(100, (v.operatingIncome as number) / Math.abs(interest))) : null;
   v.currentRatio = div(v.currentAssets, v.currentLiabilities);
   v.payout = n('netIncome') != null && (v.netIncome as number) > 0 && n('dividendsPaid') != null ? Math.abs(v.dividendsPaid as number) / (v.netIncome as number) : null;
@@ -336,7 +491,7 @@ function derive(v: Record<string, number | null>, prev: Record<string, number | 
 }
 
 /** Bump when the way statements are built changes, so older cached copies are ignored. */
-const CACHE_NS = 'financials-v3';
+const CACHE_NS = 'financials-v4';
 
 const FLOW_KEYS = Object.keys(FLOW);
 const INSTANT_KEYS = Object.keys(INSTANT);
@@ -373,9 +528,10 @@ export function buildFinancials(cik: number, cf: sec.CompanyFacts): Financials |
     const v: Record<string, number | null> = {};
     for (const k of FLOW_KEYS) v[k] = pickFlow(flowFacts[k], fy.start, fy.end);
     for (const k of INSTANT_KEYS) v[k] = pickInstant(instFacts[k], fy.end);
+    combineCapex(v);
     derive(v, i > 0 ? annualRows[i - 1] : null, true);
     annualRows.push(v);
-    const year = Number(fy.end.slice(0, 4));
+    const year = fiscalYearOf(fy.end);
     annualPeriods.push({ start: fy.start, end: fy.end, label: `FY${year}`, fiscalYear: year, kind: 'annual' });
   });
   // The first year only exists to seed growth and averages when there is plenty of history.
@@ -405,11 +561,16 @@ export function buildFinancials(cik: number, cf: sec.CompanyFacts): Financials |
     for (const k of INSTANT_KEYS) v[k] = pickInstant(instFacts[k], q.end);
     // Year-over-year comparisons use the same quarter a year earlier.
     const yearAgo = qRows.find((_, j) => Math.abs(daysBetween(qp[j].end, q.end) - 365) <= 20) ?? null;
-    derive(v, i > 0 ? qRows[i - 1] : null, false);
+    combineCapex(v);
+    let anchor: Record<string, number | null> | null = null;
+    annualYears.forEach((fy, j) => {
+      if (fy.end <= q.end) anchor = annualRows[j];
+    });
+    derive(v, i > 0 ? qRows[i - 1] : null, false, { anchor });
     v.revenueGrowth = yearAgo ? growth(yearAgo.revenue, v.revenue) : null;
     v.epsGrowth = yearAgo ? growth(yearAgo.eps, v.eps) : null;
     qRows.push(v);
-    const fyYear = q.fy.year ?? Number(q.fy.end.slice(0, 4));
+    const fyYear = q.fy.year ?? fiscalYearOf(q.fy.end);
     qPeriods.push({ start: q.start, end: q.end, label: `Q${q.q} FY${fyYear}`, fiscalYear: fyYear, kind: 'quarter' });
   });
   const keep = Math.min(qRows.length, 16);
@@ -426,6 +587,8 @@ export function buildFinancials(cik: number, cf: sec.CompanyFacts): Financials |
       else v[k] = last4.every((r) => isNum(r[k])) ? last4.reduce((s, r) => s + (r[k] as number), 0) : null;
     }
     for (const k of INSTANT_KEYS) v[k] = last4[3][k] ?? null;
+    // Each quarter's capital spending is already the sum of its lines; a line missing in one quarter must not drop the rest.
+    v.capex = last4.every((r) => isNum(r.capex)) ? last4.reduce((s, r) => s + (r.capex as number), 0) : null;
     const yearAgoRow = qRows.length >= 8 ? (() => {
       const prior = qRows.slice(-8, -4);
       const p: Record<string, number | null> = {};
@@ -433,7 +596,8 @@ export function buildFinancials(cik: number, cf: sec.CompanyFacts): Financials |
       for (const k of ['equity', 'assets', 'totalDebt']) p[k] = prior[3][k] ?? null;
       return p;
     })() : null;
-    derive(v, yearAgoRow, true);
+    // The balance sheet is the latest quarter's, so its debt figure is used as it stands.
+    derive(v, yearAgoRow, true, { fixed: { totalDebt: last4[3].totalDebt ?? null } });
     const clean: Record<string, number | null> = {};
     for (const l of LINE_ITEMS) clean[l.key] = isNum(v[l.key]) ? (v[l.key] as number) : null;
     clean.debtReported = v.debtReported ?? null;
@@ -448,6 +612,14 @@ export function buildFinancials(cik: number, cf: sec.CompanyFacts): Financials |
     if (Math.abs(Math.log(b)) > Math.abs(Math.log(splitFactor))) splitFactor = b;
   }
 
+  const scoredFrom = annualYears[Math.max(0, annualYears.length - 5)].start;
+  let recentFactor = 1;
+  for (const f of [...collect(cf, FLOW.sharesDiluted.tags, 'shares'), ...collect(cf, FLOW.eps.tags, 'USD/shares')]) {
+    if (f.e < scoredFrom) continue;
+    const b = basis.perShare(f.filed);
+    if (Math.abs(Math.log(b)) > Math.abs(Math.log(recentFactor))) recentFactor = b;
+  }
+
   return {
     cik,
     name: cf.entityName,
@@ -459,6 +631,7 @@ export function buildFinancials(cik: number, cf: sec.CompanyFacts): Financials |
     ttm,
     filings: [],
     splitAdjusted: Math.abs(splitFactor - 1) > 0.045 ? Math.round(splitFactor * 1000) / 1000 : null,
+    splitAdjustedRecent: Math.abs(recentFactor - 1) > 0.045 ? Math.round(recentFactor * 1000) / 1000 : null,
     source: 'SEC EDGAR XBRL company facts (10-K / 10-Q filings)',
   };
 }

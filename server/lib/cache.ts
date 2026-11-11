@@ -17,14 +17,14 @@ function fileFor(ns: string, key: string): string {
   return path.join(config.dataDir, ns, `${safe}.json`);
 }
 
-export async function readCache<T>(ns: string, key: string): Promise<Entry<T> | null> {
+export async function readCache<T>(ns: string, key: string, keepInMemory = true): Promise<Entry<T> | null> {
   const id = `${ns}/${key}`;
   const m = mem.get(id);
   if (m) return m;
   try {
     const raw = await fs.readFile(fileFor(ns, key), 'utf8');
     const e = JSON.parse(raw) as Entry<T>;
-    remember(id, e);
+    if (keepInMemory) remember(id, e);
     return e;
   } catch {
     return null;
@@ -40,6 +40,7 @@ function remember(id: string, e: Entry<any>) {
 export async function writeCache<T>(ns: string, key: string, v: T, keepInMemory = true): Promise<void> {
   const e: Entry<T> = { t: Date.now(), v };
   if (keepInMemory) remember(`${ns}/${key}`, e);
+  else mem.delete(`${ns}/${key}`);
   const file = fileFor(ns, key);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -58,7 +59,7 @@ export interface CachedOpts {
  */
 export async function cached<T>(ns: string, key: string, ttlMs: number, fn: () => Promise<T>, opts: CachedOpts = {}): Promise<T> {
   const id = `${ns}/${key}`;
-  const hit = await readCache<T>(ns, key);
+  const hit = await readCache<T>(ns, key, !opts.noMemory);
   if (hit && Date.now() - hit.t < ttlMs) return hit.v;
   const running = inflight.get(id);
   if (running) return running;

@@ -227,7 +227,7 @@ export default function Checklist({ a, symbol, fin, finError }: { a: Analysis; s
                 ['FCF CAGR', fmtPct(summary.fcfCagr, 1), 'FCF = CFO − all capex (a proxy, not owner earnings).'],
                 ['Average ROIC', fmtPct(summary.avgRoic, 1), 'Check the ROIC definition, acquisitions and accounting.'],
                 ['Average ROE', fmtPct(summary.avgRoe, 1), 'High debt can inflate ROE.'],
-                ['Positive-FCF years', summary.positiveFcfYears == null ? '–' : `${summary.positiveFcfYears} of ${summary.yearsEntered}`, 'Compare with the number of years supplied.'],
+                ['Positive-FCF years', summary.positiveFcfYears == null ? '–' : `${summary.positiveFcfYears} of ${summary.fcfYears}`, 'Compare with the number of years supplied.'],
                 ['Latest net debt / EBITDA', isNum(summary.netDebtEbitda) ? `${summary.netDebtEbitda.toFixed(2)}x` : '–', 'A screen for non-financial firms, not banks.'],
                 ['Latest FCF / net income', isNum(summary.fcfToNi) ? `${summary.fcfToNi.toFixed(2)}x` : '–', 'Conversion can swing with working capital.'],
                 ['Diluted share count change', fmtPct(summary.shareChange, 1), 'Negative means the share count declined (generally favorable).'],
