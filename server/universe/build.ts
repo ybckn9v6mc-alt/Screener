@@ -314,7 +314,11 @@ export function recompute(row: StockRow): void {
     }
     row.recom = e.recom;
     row.fpe = isNum(P) && isNum(e.epsThisFy) && e.epsThisFy > 0 ? P / e.epsThisFy : null;
-    row.epsGrowthThisYear = f ? growth(f.epsFy, e.epsThisFy) : null;
+    // Analyst estimates are per listed share. Where the filings count a different share (an ADR
+    // ratio, a second class), last year's reported EPS is converted with the same ratio the
+    // trailing EPS needed, so the two are compared on one basis.
+    const listed = f && isNum(f.eps) && f.eps !== 0 && isNum(row.eps) && row.eps / f.eps > 0 ? row.eps / f.eps : 1;
+    row.epsGrowthThisYear = f && isNum(f.epsFy) ? growth(f.epsFy * listed, e.epsThisFy) : null;
     row.epsGrowthNextYear = growth(e.epsThisFy, e.epsNextFy);
     const g = [row.epsGrowthThisYear, row.epsGrowthNextYear].filter((v): v is number => isNum(v));
     const gAvg = g.length ? g.reduce((s, v) => s + v, 0) / g.length : null;

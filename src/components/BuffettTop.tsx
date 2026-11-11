@@ -117,7 +117,7 @@ function Detail({ e }: { e: Entry }) {
       <div className="top10-facts">
         <div><span className="k">How the value was estimated</span>Owner earnings {usd(e.ownerEarnings)} a share ({e.ownerEarningsBasis.toLowerCase() || 'automatic estimate'}), growing {fmtPct(e.growth1to5, 1)} for five years then {fmtPct(e.growth6to10, 1)}, discounted at {fmtPct(e.discountRate, 0)}. Buy-below is value less a {fmtPct(e.marginOfSafety, 0)} margin of safety.</div>
         <div><span className="k">More from the worksheet</span>Return on equity {fmtPct(e.metrics.avgRoe, 0)} (5-yr avg) · free cash flow positive in {e.metrics.positiveFcfYears ?? '–'} of 5 years · {isNum(e.metrics.ebitToInterest) ? `EBIT covers interest ${e.metrics.ebitToInterest >= 100 ? '100x+' : times(e.metrics.ebitToInterest)}` : 'no interest figure reported'} · revenue growth {fmtPct(e.metrics.revCagr, 1)} a year · {e.metrics.quantPass} of 8 quant screens passed.</div>
-        <div><span className="k">Statements</span>{e.fyLabel ?? 'Latest fiscal year'} (to {fmtDate(e.fyEnd)}), from SEC filings.{e.splitAdjusted ? ' Share counts in the scored years are restated for a stock split.' : ''}{e.shareBasisNote ? ` ${e.shareBasisNote}` : ''}</div>
+        <div><span className="k">Statements</span>{e.fyLabel ?? 'Latest fiscal year'} (to {fmtDate(e.fyEnd)}), from SEC filings.{e.splitAdjusted ? ' Share counts in the scored years are restated for a stock split.' : ''}{e.shareBasisNote ? ` ${e.shareBasisNote}` : ''}{e.type === 'adr' ? ' Foreign company: where it reports in another currency, the dollar figures are its own year-end translations, so growth rates include currency moves.' : ''}</div>
       </div>
       {pillars.map((p) => (
         <div key={p} style={{ marginTop: 10 }}>
@@ -190,7 +190,7 @@ export default function BuffettTop() {
                   <th title="Net debt ÷ EBITDA, latest fiscal year (0 = net cash)">Net debt /<br />EBITDA</th>
                   <th title="Free cash flow ÷ net income, latest fiscal year">FCF /<br />net income</th>
                   <th title="Change in diluted share count from the first to the last of the five fiscal years scored; negative means buybacks">Share count<br />5-yr</th>
-                  <th title="Price ÷ trailing twelve-month earnings">P/E</th>
+                  <th title="Market value ÷ net income over the trailing twelve months">P/E</th>
                   <th aria-label="Details" />
                 </tr>
               </thead>
