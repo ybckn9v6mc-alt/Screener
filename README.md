@@ -50,7 +50,7 @@ usable while it fills in:
 | Layer | Source | First run | Refresh |
 |---|---|---|---|
 | Listings, market value, sector, country | Nasdaq | seconds | every 20 minutes |
-| Fundamentals for ~4,900 companies | SEC EDGAR (about 480 requests) | 1-2 minutes | daily |
+| Fundamentals for ~4,900 companies | SEC EDGAR (about 570 requests) | 1-2 minutes | daily |
 | Price history and technicals | Nasdaq (one request per stock) | about 7 minutes | daily |
 | Live prices during the session | Nasdaq batch quotes | about 1 minute per pass | every 3 minutes while the market is open |
 | Checklist scores for ~1,450 larger companies | SEC EDGAR (one request per company) | about 3 minutes | when a company reports new results |
@@ -109,14 +109,30 @@ These are the places where the app deliberately differs from what you might assu
   treats them as specialist cases, and a company is dropped if the data answers
   No to a required gate.
 - **Missing data is never treated as good news.** Companies describe capital
-  spending and debt with dozens of different XBRL captions. The app reads the
-  common ones (including oil-and-gas additions, rental-equipment purchases and
-  capitalized software, and notes, lines of credit and convertibles) and adds
-  separate lines together without counting a borrowing twice. When it still
-  cannot find a figure, the result is blank rather than zero: free cash flow is
-  not shown as equal to operating cash flow, a company that pays interest is not
-  shown as debt-free, and neither earns checklist points or a place in the
-  Top 10. Operating leases are listed but not counted as debt.
+  spending and debt with dozens of different XBRL captions, and a later filing
+  often re-presents an earlier year under different ones. The app therefore
+  reads captions one filing at a time and never adds one filing's presentation
+  to another's.
+  - *Capital spending* is the sum of the cash-flow lines a filing tags
+    (property and equipment, oil-and-gas additions, rental equipment,
+    capitalized software and other purchased intangibles) or its stated total,
+    whichever is larger. This is wider than the "purchases of property and
+    equipment" line some data sites use, so free cash flow here can be lower.
+  - *Debt* is read several independent ways (the balance-sheet captions, a
+    stated total, the instruments, the debt note). A reading is used when it
+    is complete by construction or when a second reading agrees with it, and
+    never when it exceeds total liabilities. Operating leases are listed but
+    not counted as debt.
+  - When a figure cannot be read, or the one read is contradicted (an interest
+    bill far too large for the debt shown; debt that vanishes from a quarterly
+    report with no sign of repayment), the result is blank rather than zero.
+    Free cash flow is never shown as equal to operating cash flow, a company
+    that pays interest is never shown as debt-free, and blanks earn no
+    checklist points and no place in the Top 10.
+- **Only a company's own periodic reports are read** (10-K, 10-Q, 20-F, 40-F,
+  6-K and the registration statement of a new listing). Proxy statements and
+  current reports also carry XBRL, sometimes in other units and sometimes
+  another company's statements.
 - **Stock splits are restated.** SEC filings never restate years before a split,
   which would make share counts jump and EPS collapse. The app reads the split
   from the comparative figures in the company's later filings and puts every
@@ -153,7 +169,7 @@ server/            Express API and background data collection
   market/          Index board, Fear & Greed, Buffett Indicator, series registry
   universe/        Universe build: fundamentals, technicals, live quotes, membership
   company/         Per-company financial statements, checklist ranking and detail
-shared/            Logic used by both sides: filters, columns, checklist, valuation, analysis
+shared/            Logic used by both sides: filters, columns, checklist, valuation, analysis, caption reading
 src/               React client (pages, stock tabs, chart components)
 tests/             Unit tests for the valuation model, checklist scoring, statements, filters, indicators
 data/seed/         Ticker-to-SEC-filer map so the first start skips a 15-minute crawl

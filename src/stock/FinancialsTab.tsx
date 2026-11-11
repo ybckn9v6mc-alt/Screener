@@ -163,7 +163,7 @@ export default function FinancialsTab({ fin }: { fin: Financials }) {
           </table>
         </div>
         <div className="card-pad note">
-          Built from the company’s XBRL filings. Quarterly cash-flow items are derived from year-to-date figures; a fiscal fourth quarter is the full year minus the first three quarters. EBITDA, free cash flow, owner earnings and the ratios are calculated here (hover a row name for its definition). A dash means the company did not report that item under a standard tag.
+          Built from the company’s XBRL filings. Quarterly cash-flow items are derived from year-to-date figures; a fiscal fourth quarter is the full year minus the first three quarters. EBITDA, free cash flow, owner earnings and the ratios are calculated here (hover a row name for its definition). A dash means the company did not report that item under a caption this app reads, or (for debt and capital spending) that the figure it did report could not be read reliably; it never means zero.
         </div>
       </section>
     </div>
