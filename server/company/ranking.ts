@@ -53,9 +53,12 @@ interface Base {
   capexUnknown?: boolean;
   /** Free cash flow for the screener row: trailing twelve months when available, else the latest fiscal year. */
   fcf: number | null;
-  /** The statements did not yet include the period the screener data is dated; look again then. */
+  /** The statements did not yet include the period the screener data is dated; look again at retryAt. */
+  behind?: boolean;
   retryAt?: number;
   retries?: number;
+  /** Latest balance-sheet figures from the company's own statements, for the screener row. */
+  balance?: { debt: number | null; cash: number | null; equity: number | null; roic: number | null };
   /** The twelve data answers that do not depend on today's price. */
   answers: Record<string, { a: Answer; reason: string }>;
   metrics: {
@@ -68,6 +71,8 @@ interface Base {
     ebitToInterest: number | null;
     revCagr: number | null;
     fcfCagr: number | null;
+    /** Fiscal years (of the five scored) that have a free-cash-flow figure. */
+    fcfYears?: number;
     grossMargin: number | null;
     operMargin: number | null;
     quantPass: number;
@@ -78,7 +83,7 @@ interface Base {
 }
 
 const bases = new Map<string, Base>();
-const FILE = () => path.join(config.dataDir, 'universe', 'ranking-v3.json');
+const FILE = () => path.join(config.dataDir, 'universe', 'ranking-v4.json');
 let dirty = false;
 
 export async function loadRanking(): Promise<void> {
@@ -111,7 +116,20 @@ function sharesDiverged(b: Base, r: StockRow): boolean {
   return ms != null && isNum(b.sharesUsed) && b.sharesUsed > 0 && Math.abs(ms / b.sharesUsed - 1) > 0.15;
 }
 
-async function analyseRow(r: StockRow, refetch: boolean, prev?: Base): Promise<Base> {
+/**
+ * When to look at a company's filings again because they lag the screener's data. A company
+ * gets three further looks, twelve hours apart, for each reporting date; a new reporting
+ * date starts a new round. Only a look that was itself one of those retries uses one up, so
+ * routine refreshes and share-count re-reads do not exhaust the round.
+ */
+export function nextRetry(behind: boolean, prev: { rowAsOf: string | null; retries?: number } | undefined, rowAsOf: string | null, wasRetry: boolean, now: number): { retryAt?: number; retries: number } {
+  if (!behind) return { retries: 0 };
+  const sameRound = prev != null && prev.rowAsOf === rowAsOf;
+  const retries = sameRound ? (prev.retries ?? 0) + (wasRetry ? 1 : 0) : 0;
+  return retries < 3 ? { retryAt: now + 12 * HOUR, retries } : { retries };
+}
+
+async function analyseRow(r: StockRow, refetch: boolean, prev?: Base, wasRetry = false): Promise<Base> {
   const empty = (): Base => ({
     symbol: r.symbol, cik: r.cik as number, rowAsOf: r.fundamentalsAsOf ?? null, computedAt: Date.now(), none: true, fyEnd: null, fyLabel: null, years: 0,
     inputs: { ownerEarnings: null, marginOfSafety: 0.25, discountRate: 0.1, growth1to5: 0.05, growth6to10: 0.03, terminalGrowth: 0.02 },
@@ -137,13 +155,19 @@ async function analyseRow(r: StockRow, refetch: boolean, prev?: Base): Promise<B
   // history does not reach that date yet, the download was too early: look again in half a day.
   const latest = [fin.annual.periods[n - 1].end, fin.quarterly.periods.at(-1)?.end ?? '', fin.ttm?.period.end ?? ''].sort().at(-1) as string;
   const behind = Boolean(r.fundamentalsAsOf) && daysBetween(latest, r.fundamentalsAsOf as string) > 10;
-  const retries = behind ? (prev?.retries ?? 0) + 1 : 0;
+  const thin = capexLooksIncomplete(fin);
+  // Latest known balance-sheet figures: the newest quarter where it can be read, else the fiscal year-end.
+  const t = fin.ttm?.values;
+  const last = (k: string) => fin.annual.values[k]?.[n - 1] ?? null;
+  const latestOf = (k: string) => (t && isNum(t[k]) ? t[k] : last(k));
   return {
-    retryAt: behind && retries <= 3 ? Date.now() + 12 * HOUR : undefined,
-    retries,
+    behind,
+    ...nextRetry(behind, prev, r.fundamentalsAsOf ?? null, wasRetry, Date.now()),
     sharesUsed: a.defaults?.sharesUsed ?? null,
-    capexUnknown: capexMissing(fin) || capexLooksIncomplete(fin),
-    fcf: fin.ttm?.values.fcf ?? fin.annual.values.fcf?.[n - 1] ?? null,
+    capexUnknown: capexMissing(fin) || thin,
+    // A free-cash-flow figure built on implausibly small capital spending is not shown.
+    fcf: thin ? null : (t?.fcf ?? last('fcf')),
+    balance: { debt: latestOf('totalDebt'), cash: latestOf('cash'), equity: latestOf('equity'), roic: latestOf('roic') },
     symbol: r.symbol,
     cik: r.cik as number,
     rowAsOf: r.fundamentalsAsOf ?? null,
@@ -169,6 +193,7 @@ async function analyseRow(r: StockRow, refetch: boolean, prev?: Base): Promise<B
       ebitToInterest: a.summary?.ebitToInterest ?? null,
       revCagr: a.summary?.revCagr ?? null,
       fcfCagr: a.summary?.fcfCagr ?? null,
+      fcfYears: a.summary?.fcfYears ?? 0,
       grossMargin: fin.annual.values.grossMargin?.[n - 1] ?? null,
       operMargin: fin.annual.values.operMargin?.[n - 1] ?? null,
       quantPass: a.tests.filter((t) => t.result === 'PASS').length,
@@ -200,8 +225,10 @@ export async function refreshRanking(): Promise<void> {
       await mapLimit(todo, 3, async (r) => {
         const prev = bases.get(r.symbol);
         try {
-          const fresh = prev != null && (prev.rowAsOf !== (r.fundamentalsAsOf ?? null) || (prev.retryAt != null && now > prev.retryAt));
-          bases.set(r.symbol, await analyseRow(r, fresh, prev));
+          const wasRetry = prev != null && prev.rowAsOf === (r.fundamentalsAsOf ?? null) && prev.retryAt != null && now > prev.retryAt;
+          // A new reporting date, a retry, or a previous look that lagged the screener's data: download again.
+          const fresh = prev != null && (prev.rowAsOf !== (r.fundamentalsAsOf ?? null) || wasRetry || prev.behind === true);
+          bases.set(r.symbol, await analyseRow(r, fresh, prev, wasRetry));
           dirty = true;
           applyRanking(r);
         } catch (err) {
@@ -271,6 +298,17 @@ export function applyRanking(row: StockRow): void {
   // Free cash flow from the company's own cash-flow statement (every capital-spending line, not just the common one).
   row.fcf = b.fcf;
   row.pfcf = isNum(b.fcf) && b.fcf > 0 && isNum(row.marketCap) ? row.marketCap / b.fcf : null;
+  // Debt-based figures likewise: the bulk data reads only the commonest debt captions.
+  if (b.balance) {
+    const { debt, cash, equity, roic } = b.balance;
+    row.debtEq = isNum(debt) && isNum(equity) && equity > 0 ? debt / equity : null;
+    if (!isNum(row.debtEq)) row.ltDebtEq = null;
+    else if (isNum(row.ltDebtEq) && row.ltDebtEq > row.debtEq) row.ltDebtEq = row.debtEq;
+    row.roic = roic;
+    row.ev = isNum(row.marketCap) && isNum(debt) && isNum(cash) ? row.marketCap + debt - cash : null;
+    row.evEbitda = isNum(row.ev) && isNum(row.ebitda) && row.ebitda > 0 ? row.ev / row.ebitda : null;
+    row.evSales = isNum(row.ev) && isNum(row.revenue) && row.revenue > 0 ? row.ev / row.revenue : null;
+  }
 }
 
 export interface RankItem {
@@ -448,7 +486,7 @@ export function buffettTop(limit = 10, minCap = MIN_CAP): TopPayload {
       `Universe: US-listed companies with a market value above $${(minCap / 1e9).toFixed(0)} billion that file US-GAAP statements with the SEC. Banks, insurers, other financials and real-estate companies are left out, because the workbook treats them as needing specialist analysis.`,
       `Score: of the checklist's 34 questions, ${DATA_QUESTION_IDS.length} can be answered from financial data alone. Each Yes earns the question's workbook weight, for a maximum of ${max} points. The other ${QUESTIONS.length - DATA_QUESTION_IDS.length} questions (understanding the business, the moat, management, governance) need your judgment and are not scored here, so a high rank is a shortlist for research, not a verdict.`,
       'A company is dropped if the data answers No to a required gate (recurring owner cash, conservative leverage, an estimable owner-earnings figure), if it has fewer than four fiscal years of statements, if its latest statements are more than about 16 months old, or if the valuation model cannot run because owner earnings are not positive.',
-      'Missing data is never treated as good news. If a company’s filings do not show its capital spending in a form this app can read, its free cash flow is unknown and it is not ranked; if it pays interest but its borrowings cannot be read, its leverage and return on capital are left unanswered and earn no points.',
+      'Missing data is never treated as good news. If a company’s filings do not show its capital spending for the latest year in a form this app can read, or show implausibly little of it, its free cash flow is unknown and it is not ranked (a gap in an earlier year only shortens the record the cash-flow questions are judged on). If its borrowings cannot be read, or the figure read is contradicted by its interest bill or its balance sheet, leverage and return on capital are left unanswered and earn no points.',
       'Ties are broken by the larger discount to intrinsic value, then by the higher five-year return on invested capital.',
       'Intrinsic value is the workbook’s 10-year owner-earnings model with automatic, conservative inputs: the lowest of the three-year-average, latest-year and trailing-twelve-month figures for free cash flow and owner earnings; growth at three-quarters of the most cautious reading of past growth (never above revenue growth, capped at 10%); a 10% discount rate, 2% perpetual growth and a 25% margin of safety. Open a company to see and change every input.',
       'Each company is analysed with the same code as its own checklist page, using default thresholds, so the two always agree. Prices are delayed quotes; statements are refreshed when a company reports.',

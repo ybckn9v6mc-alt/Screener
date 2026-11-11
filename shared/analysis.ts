@@ -472,7 +472,8 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
     const noCapex = 'Capital spending is not tagged in this company’s filings in a form this app can read, so free cash flow cannot be computed. Check the cash-flow statement.';
     const capexGap = c.fin ? capexMissing(c.fin) : false;
     const capexThin = c.fin ? capexLooksIncomplete(c.fin) : false;
-    data('f2', isNum(s.positiveFcfYears) && years >= 3 ? (s.positiveFcfYears >= Math.min(tf, years) && (s.avgFcf ?? 0) > 0 ? 'Yes' : s.positiveFcfYears <= years / 2 ? 'No' : 'Uncertain') : 'Uncertain', isNum(s.positiveFcfYears) ? `Free cash flow was positive in ${s.positiveFcfYears} of ${years} years, averaging ${money(s.avgFcf)}.` : capexGap ? noCapex : 'Free cash flow history is not available.', [
+    const thinCapex = 'Reported capital spending is under a third of depreciation although property and equipment are over a third of assets, so part of the spending is probably reported under a caption this app cannot read. Free cash flow built on it would be overstated.';
+    data('f2', capexThin ? 'Uncertain' : isNum(s.positiveFcfYears) && years >= 3 ? (s.positiveFcfYears >= Math.min(tf, years) && (s.avgFcf ?? 0) > 0 ? 'Yes' : s.positiveFcfYears <= years / 2 ? 'No' : 'Uncertain') : 'Uncertain', capexThin ? thinCapex : isNum(s.positiveFcfYears) ? `Free cash flow was positive in ${s.positiveFcfYears} of the ${years} years with a capital-spending figure, averaging ${money(s.avgFcf)}.` : capexGap ? noCapex : 'Free cash flow history is not available.', [
       { label: 'FCF by year', value: w.rows.fcf.map((v) => money(v)).join(' · ') },
     ], 'Cash flow statement over a full cycle.');
 
@@ -480,10 +481,10 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
     const both = (x: string, y: string) => w.rows[x].reduce<[number, number, number]>((t, v, i) => (isNum(v) && isNum(w.rows[y][i]) ? [t[0] + v, t[1] + (w.rows[y][i] as number), t[2] + 1] : t), [0, 0, 0]);
     const [cumF, cumNf, fcfYrs] = both('fcf', 'netIncome');
     const [cumC, cumN, cfoYrs] = both('cfo', 'netIncome');
-    const conv = fcfYrs > 0 && cumNf > 0 ? cumF / cumNf : null;
+    const conv = !capexThin && fcfYrs > 0 && cumNf > 0 ? cumF / cumNf : null;
     const cfoConv = cfoYrs > 0 && cumN > 0 ? cumC / cumN : null;
     const tc = th('fcfToNi', 0.8);
-    data('f3', isNum(conv) ? (conv >= tc || (isNum(cfoConv) && cfoConv >= 1.1) ? 'Yes' : conv < tc * 0.6 ? 'No' : 'Uncertain') : 'Uncertain', isNum(conv) ? `Over ${fcfYrs} years, free cash flow was ${xx(conv, 2)} of net income and operating cash flow ${xx(cfoConv, 2)}.` : fcfYrs === 0 && capexGap ? noCapex : 'Cumulative net income is not positive, so conversion is not meaningful.', [
+    data('f3', isNum(conv) ? (conv >= tc || (isNum(cfoConv) && cfoConv >= 1.1) ? 'Yes' : conv < tc * 0.6 ? 'No' : 'Uncertain') : 'Uncertain', isNum(conv) ? `Over ${fcfYrs} years, free cash flow was ${xx(conv, 2)} of net income and operating cash flow ${xx(cfoConv, 2)}.` : capexThin ? thinCapex : fcfYrs === 0 && capexGap ? noCapex : 'Cumulative net income is not positive, so conversion is not meaningful.', [
       { label: '5-yr FCF / net income', value: xx(conv, 2) },
       { label: 'Latest-year FCF / net income', value: xx(s.fcfToNi, 2) },
     ], 'Cash flow statement; working-capital movements.');
@@ -519,7 +520,7 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
 
     const [capex, capexCfo, capexYrs] = both('capex', 'cfo');
     const intensity = !capexGap && !capexThin && capexYrs > 0 && capexCfo > 0 ? capex / capexCfo : null;
-    data('f6', isNum(intensity) ? (intensity <= 0.5 ? 'Yes' : intensity > 0.75 ? 'No' : 'Uncertain') : 'Uncertain', isNum(intensity) ? `Capital spending absorbed ${pc(intensity, 0)} of operating cash flow over ${capexYrs} years.` : capexGap ? noCapex : capexThin ? 'Reported capital spending is under a third of depreciation although property and equipment are over a third of assets, so part of the spending is probably reported under a caption this app cannot read.' : 'Operating cash flow is not positive, so capital intensity is not meaningful.', [
+    data('f6', isNum(intensity) ? (intensity <= 0.5 ? 'Yes' : intensity > 0.75 ? 'No' : 'Uncertain') : 'Uncertain', isNum(intensity) ? `Capital spending absorbed ${pc(intensity, 0)} of operating cash flow over ${capexYrs} years.` : capexGap ? noCapex : capexThin ? thinCapex : 'Operating cash flow is not positive, so capital intensity is not meaningful.', [
       { label: '5-yr capex / operating cash flow', value: pc(intensity, 0) },
       { label: 'Capex vs D&A (latest)', value: `${money(w.rows.capex.at(-1))} vs ${money(a?.values.da?.[n - 1])}` },
     ], 'Capex breakdown (maintenance vs growth) in MD&A; PP&E note.');
@@ -589,8 +590,10 @@ export function suggestAnswers(c: SuggestContext): Record<string, Suggestion> {
   {
     const years = w ? nums(w.rows.fcf).length : 0;
     const pos = s?.positiveFcfYears ?? null;
+    const thin = c.fin ? capexLooksIncomplete(c.fin) : false;
     let v1: Answer = 'Uncertain';
-    if (isNum(i.ownerEarnings) && i.ownerEarnings > 0 && isNum(pos) && years >= 3 && pos >= years - 1) v1 = 'Yes';
+    if (thin) v1 = 'Uncertain';
+    else if (isNum(i.ownerEarnings) && i.ownerEarnings > 0 && isNum(pos) && years >= 3 && pos >= years - 1) v1 = 'Yes';
     else if (isNum(pos) && years >= 3 && pos <= years / 2) v1 = 'No';
     data('v1', v1, v1 === 'Yes' ? `Free cash flow was positive in ${pos} of ${years} years, so a normalized owner-earnings figure can be anchored in the record.` : v1 === 'No' ? 'Cash flow has been negative too often to anchor a conservative estimate.' : 'Enter a normalized owner-earnings figure on the Valuation tab; the record is too uneven to set one automatically.', [
       { label: 'Owner earnings / share used', value: isNum(i.ownerEarnings) ? `$${i.ownerEarnings.toFixed(2)}` : 'not set' },

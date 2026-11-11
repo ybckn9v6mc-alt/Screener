@@ -9,7 +9,8 @@ import type { Bar } from '../shared/types';
 import { buildFinancials } from '../server/company/financials';
 import type { CompanyFacts, CompanyFact } from '../server/sources/sec';
 import { analyse, autoScore, priceSuggestions, DATA_QUESTION_IDS } from '../shared/analysis';
-import { rankOrder } from '../server/company/ranking';
+import { rankOrder, nextRetry } from '../server/company/ranking';
+import { combineCapex, combineDebt } from '../shared/captions';
 
 describe('intrinsic value model (workbook "Valuation" sheet)', () => {
   const inputs = { price: 60, ownerEarnings: 5, marginOfSafety: 0.25, discountRate: 0.1, growth1to5: 0.05, growth6to10: 0.03, terminalGrowth: 0.02 };
@@ -358,7 +359,7 @@ describe('statements: missing or unusual captions', () => {
     for (const id of ['f2', 'f3', 'f6', 'v1']) expect(a.suggestions[id].answer).toBe('Uncertain');
   });
 
-  it('adds up separate capital-spending lines and prefers a stated total when it is larger', () => {
+  it('adds up separate capital-spending lines of one filing, and never adds a stated total to them', () => {
     const lines = buildFinancials(1, filer({
       ...base,
       extra: (usd) => {
@@ -369,8 +370,35 @@ describe('statements: missing or unusual captions', () => {
     }))!;
     expect(last(lines.annual.values.capex)).toBeCloseTo(income(2025) * 0.6, 0);
     expect(last(lines.annual.values.fcf)).toBeCloseTo(income(2025) * (1.2 - 0.6), 0);
-    const total = buildFinancials(1, filer({ ...base, extra: (usd) => { usd.PaymentsToAcquireProductiveAssets = years.map((fy) => annualFact(fy, income(fy) * 0.9)); } }))!;
-    expect(last(total.annual.values.capex)).toBeCloseTo(income(2025) * 0.9, 0); // not 0.9 + 0.2
+    // The caption logic itself, one filing's captions at a time.
+    const get = (o: Record<string, number>) => (tag: string) => o[tag] ?? null;
+    expect(combineCapex(get({ PaymentsToAcquirePropertyPlantAndEquipment: 518, PaymentsForSoftware: 364 }))).toBe(882); // two lines
+    expect(combineCapex(get({ PaymentsToAcquireProductiveAssets: 152, PaymentsToAcquirePropertyPlantAndEquipment: 152, PaymentsToAcquireIntangibleAssets: 2 }))).toBe(154); // total repeats a line
+    expect(combineCapex(get({ PaymentsToAcquireProductiveAssets: 353, PaymentsToAcquirePropertyPlantAndEquipment: 367 }))).toBe(367); // total is the line net of grants
+    expect(combineCapex(get({ PaymentsToAcquireProductiveAssets: 900, PaymentsToAcquirePropertyPlantAndEquipment: 200 }))).toBe(900); // a true total
+    expect(combineCapex(get({ PaymentsToAcquireOilAndGasPropertyAndEquipment: 6115, PaymentsToAcquireOilAndGasProperty: 269, PaymentsToAcquireOtherPropertyPlantAndEquipment: 479 }))).toBe(6594); // detail inside its parent
+    expect(combineCapex(get({ PaymentsToAcquireOilAndGasPropertyAndEquipment: 2104, PaymentsToExploreAndDevelopOilAndGasProperties: 1311 }))).toBe(3415); // acquisitions and drilling
+    expect(combineCapex(get({ PaymentsToAcquirePropertyPlantAndEquipment: -40 }))).toBe(40); // sign conventions differ between filings
+    expect(combineCapex(get({ PaymentsToAcquireOtherPropertyPlantAndEquipment: 1, PaymentsForProceedsFromProductiveAssets: 340 }))).toBe(340); // net purchases as a floor
+    expect(combineCapex(get({ PaymentsToAcquireOtherPropertyPlantAndEquipment: 0 }))).toBeNull(); // zero is not a reading
+    expect(combineCapex(get({}))).toBeNull();
+  });
+
+  it('does not add an old presentation of a year to a later filing\'s re-presentation of it', () => {
+    // The FY2023 annual report showed one capital-spending line; the FY2024 and FY2025 reports
+    // re-present FY2023 as drilling plus other equipment. Same year, same money.
+    const fin = buildFinancials(1, filer({
+      ...base,
+      extra: (usd) => {
+        const all = usd.PaymentsToAcquirePropertyPlantAndEquipment;
+        usd.PaymentsToAcquirePropertyPlantAndEquipment = all.filter((f) => f.accn === 'a-2023' || !f.end.startsWith('2023'));
+        const later = all.filter((f) => f.end.startsWith('2023') && f.accn !== 'a-2023');
+        usd.PaymentsToExploreAndDevelopOilAndGasProperties = later.map((f) => ({ ...f, val: f.val * 0.8 }));
+        usd.PaymentsToAcquireOtherPropertyPlantAndEquipment = later.map((f) => ({ ...f, val: f.val * 0.2 }));
+      },
+    }))!;
+    const i = fin.annual.periods.findIndex((p) => p.label === 'FY2023');
+    expect(fin.annual.values.capex[i]).toBeCloseTo(income(2023) * 0.2, 0); // not twice that
   });
 
   it('flags a capital-spending figure that is implausibly small for the asset base', () => {
@@ -394,14 +422,74 @@ describe('statements: missing or unusual captions', () => {
     expect(debtOf((inst) => { inst.NotesPayable = years.map((fy) => instantFact(fy, 600e6)); })).toBe(600e6);
     // Senior notes and convertible debt are different borrowings: added.
     expect(debtOf((inst) => { inst.SeniorNotes = years.map((fy) => instantFact(fy, 1800e6)); inst.ConvertibleDebt = years.map((fy) => instantFact(fy, 575e6)); })).toBe(2375e6);
+
+    const read = (o: Record<string, number>, cap?: number) => combineDebt((tag) => o[tag] ?? null, cap)?.value ?? null;
     // "Debt, current" already contains the current portion of long-term debt.
-    expect(debtOf((inst) => {
-      inst.LongTermDebtNoncurrent = years.map((fy) => instantFact(fy, 9000e6));
-      inst.DebtCurrent = years.map((fy) => instantFact(fy, 1500e6));
-      inst.LongTermDebtCurrent = years.map((fy) => instantFact(fy, 1500e6));
-    })).toBe(10500e6);
-    // The same borrowing under a balance-sheet caption and a note caption: counted once.
-    expect(debtOf((inst) => { inst.LongTermDebtNoncurrent = years.map((fy) => instantFact(fy, 5640e6)); inst.SecuredLongTermDebt = years.map((fy) => instantFact(fy, 5640e6)); })).toBe(5640e6);
+    expect(read({ LongTermDebtNoncurrent: 9000, DebtCurrent: 1500, LongTermDebtCurrent: 1500 })).toBe(10500);
+    // The same debt by instrument and by security is one amount, not two.
+    expect(read({ SeniorLongTermNotes: 2081, SecuredLongTermDebt: 408, UnsecuredLongTermDebt: 1673, LongTermDebt: 2081 })).toBe(2081);
+    // A line of credit shown as both the long-term caption and a "current" one.
+    expect(read({ LongTermDebtAndCapitalLeaseObligations: 319e6, LinesOfCreditCurrent: 319e6 })).toBe(319e6);
+    // "Long-term debt" that already includes the short-term borrowings beside it.
+    expect(read({ LongTermDebtNoncurrent: 81147e6, ShortTermBorrowings: 5135e6, LongTermDebt: 86282e6 })).toBe(86282e6);
+    // "Long-term debt" used for the non-current line alone: the debt note's carrying amount settles it...
+    expect(read({ LongTermDebt: 4129e6, DebtCurrent: 1499e6, DebtInstrumentCarryingAmount: 5650e6 })).toBe(5628e6);
+    // ...and without that evidence the usual meaning (it includes the current portion) stands.
+    expect(read({ LongTermDebt: 4129e6, DebtCurrent: 1499e6 })).toBe(4129e6);
+    // The note shows more than the one caption on the balance sheet that could be read.
+    const mat = (vals: number[]) => Object.fromEntries(['InNextTwelveMonths', 'InYearTwo', 'InYearThree', 'InYearFour', 'InYearFive', 'AfterYearFive'].map((k, i) => [`LongTermDebtMaturitiesRepaymentsOfPrincipal${k}`, vals[i]]));
+    expect(read({ LongTermDebtNoncurrent: 9987e6, DebtInstrumentCarryingAmount: 11459e6, ...mat([1397e6, 1075e6, 1137e6, 1500e6, 1000e6, 5350e6]) })).toBe(11459e6);
+    // An agreed figure smaller than the balance-sheet captions covers only part of the debt (the term loan, not the revolver).
+    expect(read({ LongTermDebtNoncurrent: 763e6, ShortTermBorrowings: 24e6, LongTermDebt: 469e6, ...mat([25e6, 25e6, 25e6, 394e6, 0, 0]) })).toBe(787e6);
+    // "Line of credit" is often the size of the facility; it is not added to the notes and loans.
+    expect(read({ SeniorNotes: 1742e6, LoansPayable: 896e6, LineOfCredit: 2326e6, SecuredDebt: 249e6 })).toBe(2638e6);
+    // Nothing above total liabilities is accepted: a mis-tagged total gives way to the captions...
+    expect(read({ LongTermDebt: 872e6, LongTermDebtNoncurrent: 0, LongTermDebtCurrent: 0, DebtInstrumentCarryingAmount: 0 }, 287e6)).toBe(0);
+    // ...and when every reading is impossible there is no figure at all.
+    expect(combineDebt((tag) => ({ LongTermDebt: 9622e6 } as Record<string, number>)[tag] ?? null, 5995e6)).toEqual({ value: null, support: 0 });
+    expect(combineDebt(() => null)).toBeNull();
+  });
+
+  it('does not accept a debt figure that the interest bill or the balance sheet contradicts', () => {
+    // Only the small current portion can be read while the company pays $50M of interest a year.
+    const partial = buildFinancials(1, filer({ ...base, extra: (usd, inst) => {
+      delete inst.LongTermDebtNoncurrent;
+      inst.DebtCurrent = years.map((fy) => instantFact(fy, 20e6));
+      usd.InterestPaidNet = years.map((fy) => annualFact(fy, 50e6));
+    } }))!;
+    expect(last(partial.annual.values.totalDebt)).toBeNull();
+    // The caption that carried the debt disappears in the last year, liabilities do not fall,
+    // interest is unchanged and nothing was repaid: the debt is still there, just not readable.
+    const vanished = buildFinancials(1, filer({ ...base, extra: (usd, inst) => {
+      inst.LongTermDebtNoncurrent = inst.LongTermDebtNoncurrent.filter((f) => !f.end.startsWith('2025'));
+      inst.LongTermDebtCurrent = years.map((fy) => instantFact(fy, 10e6));
+      usd.InterestPaidNet = years.map((fy) => annualFact(fy, 25e6));
+    } }))!;
+    expect(last(vanished.annual.values.totalDebt)).toBeNull();
+    // The same disappearance with the cash-flow statement showing the repayment: debt really fell.
+    const repaid = buildFinancials(1, filer({ ...base, extra: (usd, inst) => {
+      inst.LongTermDebtNoncurrent = inst.LongTermDebtNoncurrent.filter((f) => !f.end.startsWith('2025'));
+      inst.LongTermDebtCurrent = years.map((fy) => instantFact(fy, 10e6));
+      usd.InterestPaidNet = years.map((fy) => annualFact(fy, 25e6));
+      usd.RepaymentsOfLongTermDebt = [annualFact(2025, income(2024) * 0.5)];
+    } }))!;
+    expect(last(repaid.annual.values.totalDebt)).toBe(10e6);
+  });
+
+  it('reads only the company\'s own periodic reports, and an annual report for a fiscal year', () => {
+    const own = buildFinancials(1, filer(base))!;
+    // Another company's statements filed as an exhibit to a current report, after the annual report.
+    const foreign = buildFinancials(1, filer({ ...base, extra: (usd) => { for (const fy of years) usd.NetIncomeLoss.push({ ...annualFact(fy, income(fy) * 2, '8-K'), filed: `${fy + 1}-03-25` }); } }))!;
+    expect(foreign.annual.values.netIncome).toEqual(own.annual.values.netIncome);
+    // A quarterly report that mistakenly carries a figure for the whole of last year.
+    const slip = buildFinancials(1, filer({ ...base, extra: (usd) => { usd.Revenues.push({ ...annualFact(2025, income(2025)), form: '10-Q', filed: '2026-04-23' }); } }))!;
+    expect(last(slip.annual.values.revenue)).toBe(income(2025) * 5);
+  });
+
+  it('puts a share count filed in thousands back in line with the other years', () => {
+    // Never restated, so the comparison between filings cannot catch it.
+    const fin = buildFinancials(1, filer({ ...base, shares: (fy) => (fy === 2023 ? 100e3 : 100e6) }))!;
+    for (const v of fin.annual.values.sharesDiluted) expect(v).toBeCloseTo(100e6, 0);
   });
 
   it('treats debt as unknown, not zero, when a company pays interest but no debt caption can be read', () => {
@@ -465,5 +553,24 @@ describe('ranking order', () => {
       item('NOVAL', 5, 30, null, 0.9),
     ]).map((x) => x.symbol);
     expect(order).toEqual(['CHEAP', 'ROIC', 'TIE.A', 'NOVAL', 'LOW']);
+  });
+});
+
+describe('re-reading statements that lag the screener data', () => {
+  const H = 3_600_000;
+  it('allows three retries per reporting date and starts again for the next one', () => {
+    const first = nextRetry(true, undefined, '2026-09-30', false, 0);
+    expect(first).toEqual({ retryAt: 12 * H, retries: 0 });
+    const r1 = nextRetry(true, { rowAsOf: '2026-09-30', retries: first.retries }, '2026-09-30', true, 0);
+    const r2 = nextRetry(true, { rowAsOf: '2026-09-30', retries: r1.retries }, '2026-09-30', true, 0);
+    const r3 = nextRetry(true, { rowAsOf: '2026-09-30', retries: r2.retries }, '2026-09-30', true, 0);
+    expect([r1.retries, r2.retries, r3.retries]).toEqual([1, 2, 3]);
+    expect(r3.retryAt).toBeUndefined(); // the round is used up
+    // A routine refresh or a share-count re-read is not a retry and does not use one up.
+    expect(nextRetry(true, { rowAsOf: '2026-09-30', retries: 1 }, '2026-09-30', false, 0)).toEqual({ retryAt: 12 * H, retries: 1 });
+    // The next quarter's report starts a new round, even after an exhausted one.
+    expect(nextRetry(true, { rowAsOf: '2026-09-30', retries: 3 }, '2026-12-31', false, 0)).toEqual({ retryAt: 12 * H, retries: 0 });
+    // Statements in step: nothing scheduled.
+    expect(nextRetry(false, { rowAsOf: '2026-09-30', retries: 2 }, '2026-09-30', true, 0)).toEqual({ retries: 0 });
   });
 });

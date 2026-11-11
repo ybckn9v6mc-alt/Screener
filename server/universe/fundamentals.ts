@@ -1,6 +1,7 @@
 import * as sec from '../sources/sec.ts';
 import { mapLimit } from '../lib/http.ts';
 import { cagr, daysBetween, div, growth, isNum, ymd } from '../lib/util.ts';
+import { combineCapex, combineDebt } from '../../shared/captions.ts';
 
 /**
  * Fundamentals for every SEC filer at once, using the XBRL "frames" API: one
@@ -16,6 +17,7 @@ interface Fact {
   e: string;
   v: number;
   p: number; // tag priority (0 = preferred)
+  a?: string; // accession number of the filing the figure comes from
 }
 
 type Kind = 'flow' | 'annual' | 'instant';
@@ -38,7 +40,6 @@ const CONCEPTS: Record<string, Concept> = {
   eps: { kind: 'flow', unit: 'USD-per-shares', history: true, tags: ['EarningsPerShareDiluted', 'EarningsPerShareBasicAndDiluted', 'EarningsPerShareBasic'] },
 
   cfo: { kind: 'annual', unit: 'USD', tags: ['NetCashProvidedByUsedInOperatingActivities', 'NetCashProvidedByUsedInOperatingActivitiesContinuingOperations'] },
-  capex: { kind: 'annual', unit: 'USD', tags: ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets', 'PaymentsForCapitalImprovements', 'PaymentsToAcquireOilAndGasPropertyAndEquipment', 'PaymentsToExploreAndDevelopOilAndGasProperties'] },
   da: { kind: 'annual', unit: 'USD', tags: ['DepreciationDepletionAndAmortization', 'DepreciationAndAmortization', 'DepreciationAmortizationAndAccretionNet', 'Depreciation'] },
   tax: { kind: 'annual', unit: 'USD', tags: ['IncomeTaxExpenseBenefit'] },
   dividendsPaid: { kind: 'annual', unit: 'USD', tags: ['PaymentsOfDividendsCommonStock', 'PaymentsOfDividends'] },
@@ -51,12 +52,28 @@ const CONCEPTS: Record<string, Concept> = {
   inventory: { kind: 'instant', unit: 'USD', tags: ['InventoryNet'] },
   currentLiabilities: { kind: 'instant', unit: 'USD', tags: ['LiabilitiesCurrent'] },
   equity: { kind: 'instant', unit: 'USD', tags: ['StockholdersEquity', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'] },
-  ltDebtNoncurrent: { kind: 'instant', unit: 'USD', tags: ['LongTermDebtNoncurrent', 'LongTermDebtAndCapitalLeaseObligations', 'LongTermNotesPayable', 'ConvertibleNotesPayableNoncurrent'] },
-  ltDebtTotal: { kind: 'instant', unit: 'USD', tags: ['LongTermDebt', 'DebtLongtermAndShorttermCombinedAmount', 'LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities', 'DebtAndCapitalLeaseObligations', 'NotesPayable', 'SeniorNotes'] },
-  ltDebtCurrent: { kind: 'instant', unit: 'USD', tags: ['LongTermDebtCurrent', 'LongTermDebtAndCapitalLeaseObligationsCurrent'] },
-  stDebt: { kind: 'instant', unit: 'USD', tags: ['DebtCurrent', 'ShortTermBorrowings', 'CommercialPaper'] },
+  liabilities: { kind: 'instant', unit: 'USD', tags: ['Liabilities'] },
   publicFloat: { kind: 'instant', unit: 'USD', tax: 'dei', tags: ['EntityPublicFloat'] },
 };
+
+/**
+ * Capital spending and debt are read caption by caption and combined by shared/captions.ts,
+ * exactly as on a company's own page. Fetching every caption for every period would triple
+ * the download, so the bulk data reads the ones that cover almost all companies; the larger
+ * companies are re-read in full from their own filings (server/company/ranking.ts).
+ */
+const BULK_CAPEX_TAGS = [
+  'PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets', 'PaymentsForCapitalImprovements', 'PaymentsToAcquireOilAndGasPropertyAndEquipment',
+  'PaymentsToExploreAndDevelopOilAndGasProperties', 'PaymentsToAcquireOtherPropertyPlantAndEquipment', 'PaymentsToAcquireEquipmentOnLease', 'PaymentsToDevelopSoftware',
+  'PaymentsForSoftware', 'PaymentsToAcquireSoftware', 'PaymentsToAcquireIntangibleAssets', 'PaymentsToAcquireOtherProductiveAssets', 'PaymentsForProceedsFromProductiveAssets',
+];
+const BULK_DEBT_TAGS = [
+  'LongTermDebtNoncurrent', 'LongTermDebt', 'LongTermDebtCurrent', 'LongTermDebtAndCapitalLeaseObligations', 'LongTermDebtAndCapitalLeaseObligationsCurrent', 'DebtCurrent',
+  'ShortTermBorrowings', 'CommercialPaper', 'LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities', 'DebtLongtermAndShorttermCombinedAmount', 'DebtAndCapitalLeaseObligations',
+  'ConvertibleDebtNoncurrent', 'ConvertibleLongTermNotesPayable', 'ConvertibleNotesPayableNoncurrent', 'LongTermLineOfCredit', 'NotesPayable', 'SeniorNotes', 'DebtInstrumentCarryingAmount',
+];
+for (const tag of BULK_CAPEX_TAGS) CONCEPTS[`capex:${tag}`] = { kind: 'annual', unit: 'USD', tags: [tag] };
+for (const tag of BULK_DEBT_TAGS) CONCEPTS[`debt:${tag}`] = { kind: 'instant', unit: 'USD', tags: [tag] };
 
 export interface Fundamentals {
   cik: number;
@@ -300,11 +317,31 @@ function compute(cik: number, data: CikData, today: string): Fundamentals | null
   if (rev && gp && gp.end === rev.end && gp.basis === rev.basis) grossProfit = gp.v;
   else if (rev && cor && cor.end === rev.end && cor.basis === rev.basis) grossProfit = rev.v - cor.v;
 
-  const cfo = fy('cfo')?.v ?? null;
-  const capexRaw = fy('capex')?.v ?? null;
+  // Captions are combined one filing at a time: a later filing often re-presents a year under
+  // different captions, and adding the old presentation to the new one counts it twice. The
+  // bulk data keeps the latest figure for each caption, so the filing that carries the most of
+  // them (the latest, on a tie) is the current presentation.
+  const oneFiling = (prefix: string, tags: string[], at: (facts: Fact[] | undefined) => Fact | null) => {
+    const groups = new Map<string, Map<string, number>>();
+    for (const tag of tags) {
+      const f = at(prefix === 'capex' ? data.d[`capex:${tag}`] : data.i[`debt:${tag}`]);
+      if (!f) continue;
+      const key = f.a ?? '';
+      if (!groups.has(key)) groups.set(key, new Map());
+      (groups.get(key) as Map<string, number>).set(tag, f.v);
+    }
+    // Accession numbers end in year and sequence, so the later filing sorts higher.
+    const order = (accn: string) => accn.split('-').slice(1).join('-');
+    const best = [...groups.entries()].sort((x, y) => y[1].size - x[1].size || (order(x[0]) < order(y[0]) ? 1 : -1))[0];
+    return best ? (tag: string) => best[1].get(tag) ?? null : null;
+  };
+  const cfoFact = fy('cfo');
+  const cfo = cfoFact?.v ?? null;
+  // Capital spending for the same fiscal year as the operating cash flow it is taken from.
+  const capexGet = cfoFact ? oneFiling('capex', BULK_CAPEX_TAGS, (facts) => annualSeries(facts).find((f) => f.e === cfoFact.e) ?? null) : null;
+  const capex = capexGet ? combineCapex(capexGet) : null;
   // Without a capital-spending figure free cash flow is unknown; it is not operating cash flow.
-  // (Larger companies get theirs from their own cash-flow statement, which reads every capex line.)
-  const fcf = isNum(cfo) && isNum(capexRaw) ? cfo - Math.abs(capexRaw) : null;
+  const fcf = isNum(cfo) && isNum(capex) ? cfo - capex : null;
   const da = fy('da')?.v ?? null;
   const ebitda = isNum(operatingIncome) && isNum(da) ? operatingIncome + da : null;
 
@@ -315,15 +352,21 @@ function compute(cik: number, data: CikData, today: string): Fundamentals | null
   const currentAssets = bal('currentAssets');
   const currentLiabilities = bal('currentLiabilities');
   const inventory = bal('inventory');
-  const ltNon = bal('ltDebtNoncurrent');
-  const ltTotal = bal('ltDebtTotal');
-  const ltCur = bal('ltDebtCurrent');
-  const st = bal('stDebt');
+  const liabilities = bal('liabilities') ?? (isNum(assets) && isNum(equity) ? assets - equity : null);
+  const debtGet = balanceDate && !stale(balanceDate) ? oneFiling('debt', BULK_DEBT_TAGS, (facts) => {
+    let hit: Fact | null = null;
+    for (const f of facts ?? []) if (Math.abs(daysBetween(f.e, balanceDate)) <= 4) hit = f;
+    return hit;
+  }) : null;
+  // Null when no debt caption is tagged or none gives a credible figure: blank, never zero.
+  const debt = debtGet ? (combineDebt(debtGet, liabilities)?.value ?? null) : null;
+  const debtKnown = debt != null;
   let ltDebt: number | null = null;
-  if (ltNon != null) ltDebt = ltNon;
-  else if (ltTotal != null) ltDebt = Math.max(0, ltTotal - (ltCur ?? 0));
-  const debtKnown = ltNon != null || ltTotal != null || ltCur != null || st != null;
-  const debt = debtKnown ? (ltNon != null ? ltNon + (ltCur ?? 0) : ltTotal ?? ltCur ?? 0) + (st ?? 0) : null;
+  if (debt != null && debtGet) {
+    const g = (tag: string) => debtGet(tag);
+    const current = g('DebtCurrent') ?? ((g('LongTermDebtCurrent') ?? g('LongTermDebtAndCapitalLeaseObligationsCurrent') ?? 0) + (g('ShortTermBorrowings') ?? g('CommercialPaper') ?? 0));
+    ltDebt = Math.max(0, debt - Math.min(debt, current));
+  }
 
   const taxFact = fy('tax');
   const preFy = latest(annualSeries(data.d.pretax));
@@ -408,7 +451,7 @@ export async function fetchAllFundamentals(onProgress?: (done: number, total: nu
           store.set(f.cik, d);
         }
         const bucket = r.instant ? d.i : d.d;
-        (bucket[r.concept] ??= []).push({ s: f.start, e: f.end, v: f.val, p: r.p });
+        (bucket[r.concept] ??= []).push({ s: f.start, e: f.end, v: f.val, p: r.p, a: f.accn });
       }
     } catch {
       // A missing frame just means fewer data points for that concept/period.

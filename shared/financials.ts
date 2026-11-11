@@ -55,7 +55,7 @@ export const LINE_ITEMS: LineItem[] = [
   { key: 'ebitda', label: 'EBITDA', section: 'income', fmt: 'money', note: 'Operating income + depreciation & amortization' },
 
   { key: 'cfo', label: 'Cash from operations', section: 'cashflow', fmt: 'money', strong: true },
-  { key: 'capex', label: 'Capital expenditures', section: 'cashflow', fmt: 'money', note: 'All tagged purchases of property, equipment, oil and gas properties, rental equipment and capitalized software' },
+  { key: 'capex', label: 'Capital expenditures', section: 'cashflow', fmt: 'money', note: 'Purchases of property and equipment, oil and gas properties, rental equipment, capitalized software and other intangible assets, as tagged in the filing' },
   { key: 'fcf', label: 'Free cash flow', section: 'cashflow', fmt: 'money', strong: true, note: 'Cash from operations − capital expenditures. Blank when capital spending is not tagged.' },
   { key: 'da', label: 'Depreciation & amortization', section: 'cashflow', fmt: 'money' },
   { key: 'sbc', label: 'Stock-based compensation', section: 'cashflow', fmt: 'money' },
